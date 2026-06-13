@@ -75,6 +75,20 @@ function BML_Bridge.emit(event_name)
 end
 
 -- ---------------------------------------------------------------------------
+-- BML_Bridge.emit_raw
+-- ---------------------------------------------------------------------------
+-- Sends a pre-encoded, newline-terminated string directly over _client without
+-- going through json.encode. Used by the probe_funcs branch of dispatch() so
+-- the response event can be built with json.encode before calling emit_raw.
+function BML_Bridge.emit_raw(line)
+  if not _connected then return end
+  local bytes, err = _client:send(line)
+  if not bytes then
+    _connected = false
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- BML_Bridge.poll
 -- ---------------------------------------------------------------------------
 -- Called every frame via the love.update wrapper.
@@ -89,8 +103,10 @@ function BML_Bridge.poll(dt)
   while true do
     local line, err = _client:receive("*l")
     if line then
-      -- Future: dispatch action JSON to the game (Phase 2).
-      -- For now, silently consume to prevent buffer buildup.
+      local ok, action = pcall(json.decode, line)
+      if ok and type(action) == "table" then
+        BML_Bridge.dispatch(action)
+      end
     else
       -- err == "timeout" means no more data; any other error = disconnection.
       if err ~= "timeout" then
@@ -99,6 +115,140 @@ function BML_Bridge.poll(dt)
       break
     end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- BML_Bridge._get_all_shop_items
+-- ---------------------------------------------------------------------------
+-- Flattens G.shop_jokers, G.shop_vouchers, and G.shop_booster into a single
+-- ordered list. Python uses 0-based indices; this returns a 1-based Lua table.
+-- The "buy" action from Python maps action.index+1 into this list.
+function BML_Bridge._get_all_shop_items()
+  local items = {}
+  local areas = { G.shop_jokers, G.shop_vouchers, G.shop_booster }
+  for _, area in ipairs(areas) do
+    if area and area.cards then
+      for i = 1, #area.cards do
+        items[#items + 1] = area.cards[i]
+      end
+    end
+  end
+  return items
+end
+
+-- ---------------------------------------------------------------------------
+-- BML_Bridge.dispatch
+-- ---------------------------------------------------------------------------
+-- Decodes an action dict (already json.decode'd in poll) and calls the
+-- appropriate Balatro G.FUNCS or G.* entry point. All game mutations are
+-- wrapped in a single top-level pcall so a bad action never crashes the game
+-- loop. Python-side: socket timeout → truncated=True handles missed actions.
+--
+-- Verified G.FUNCS names (from Phase 1 bridge.lua hooks):
+--   play_cards_from_highlighted, discard_cards_from_highlighted,
+--   buy_from_shop, toggle_shop, cash_out, game_over
+--
+-- ASSUMED G.FUNCS names (not yet live-verified — run probe_lua_funcs.py):
+--   sell_card     (sell_joker branch)    — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   use_card      (use_consumable branch) — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   reroll_shop   (reroll branch)        — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   select_blind  (select_blind branch)  — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   skip_blind    (skip_blind branch)    — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+function BML_Bridge.dispatch(action)
+  local name = action.action
+  if not name then return end
+
+  -- probe_funcs: collect all G.FUNCS keys and emit them over the socket.
+  -- This branch does NOT go through the game-mutation pcall below; it only
+  -- reads G.FUNCS and sends data, which is safe outside pcall.
+  if name == "probe_funcs" then
+    local keys = {}
+    if G.FUNCS then
+      for k, _ in pairs(G.FUNCS) do keys[#keys + 1] = k end
+    end
+    table.sort(keys)
+    local ok_enc, encoded = pcall(json.encode, { event = "probe_funcs_result", funcs = keys })
+    if ok_enc then
+      BML_Bridge.emit_raw(encoded .. "\n")
+    end
+    return
+  end
+
+  -- All game-mutation branches are wrapped in a single pcall.
+  -- If G.FUNCS name is wrong or the game is in an unexpected state the error
+  -- is silently absorbed; Python will time out and set truncated=True.
+  local ok, err = pcall(function()  -- luacheck: ignore err
+
+    if name == "start_run" then
+      -- Guard: only valid when the main menu is showing.
+      if G.STATE == G.STATES.MENU then
+        G.start_run({
+          ante       = 1,
+          final_ante = 8,
+          seed       = "",
+          stake      = action.stake or 1,
+          challenge  = nil,
+          deck       = { config = { center_key = action.deck or "b_red" } },
+        })
+      end
+
+    elseif name == "toggle_card" then
+      -- Python sends 0-based index; Lua cards table is 1-based.
+      local i = action.index + 1
+      local card = G.hand and G.hand.cards and G.hand.cards[i]
+      if card then
+        card.highlighted = not card.highlighted
+      end
+
+    elseif name == "commit_play" then
+      G.FUNCS.play_cards_from_highlighted({})
+
+    elseif name == "commit_discard" then
+      G.FUNCS.discard_cards_from_highlighted({})
+
+    elseif name == "buy" then
+      local i = action.index + 1
+      local all_items = BML_Bridge._get_all_shop_items()
+      local card = all_items[i]
+      if card then
+        G.FUNCS.buy_from_shop({ config = { ref_table = card } })
+      end
+
+    elseif name == "sell_joker" then
+      local i = action.index + 1
+      local card = G.jokers and G.jokers.cards and G.jokers.cards[i]
+      if card and card.ability and not card.ability.eternal then
+        -- ASSUMED: G.FUNCS.sell_card — verify via probe_lua_funcs.py (02-04 checkpoint)
+        G.FUNCS.sell_card({ config = { ref_table = card } })
+      end
+
+    elseif name == "use_consumable" then
+      local i = action.index + 1
+      -- Note: game ships with a typo — consumables CardArea is G.consumeables (extra 'e').
+      local card = G.consumeables and G.consumeables.cards and G.consumeables.cards[i]
+      if card then
+        -- ASSUMED: G.FUNCS.use_card — verify via probe_lua_funcs.py (02-04 checkpoint)
+        G.FUNCS.use_card({ config = { ref_table = card } })
+      end
+
+    elseif name == "reroll" then
+      -- ASSUMED: G.FUNCS.reroll_shop — verify via probe_lua_funcs.py (02-04 checkpoint)
+      G.FUNCS.reroll_shop({})
+
+    elseif name == "leave_shop" then
+      G.FUNCS.toggle_shop({})
+
+    elseif name == "select_blind" then
+      -- ASSUMED: G.FUNCS.select_blind — verify via probe_lua_funcs.py (02-04 checkpoint)
+      G.FUNCS.select_blind({})
+
+    elseif name == "skip_blind" then
+      -- ASSUMED: G.FUNCS.skip_blind — verify via probe_lua_funcs.py (02-04 checkpoint)
+      G.FUNCS.skip_blind({})
+
+    end
+  end)
+  -- ok=false: game function errored or name was wrong; silently absorbed.
 end
 
 -- ---------------------------------------------------------------------------
