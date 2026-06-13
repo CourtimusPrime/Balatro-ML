@@ -1,0 +1,10 @@
+{
+  "id": "BalatroML",
+  "name": "Balatro ML Bridge",
+  "author": ["BalatroML"],
+  "description": "TCP socket bridge for ML agent training",
+  "prefix": "bml",
+  "main_file": "bridge.lua",
+  "version": "1.0.0",
+  "dependencies": ["Steamodded (>=1.0)"]
+}
