@@ -46,3 +46,6 @@ select = ["E", "F", "I", "UP"]  # errors, pyflakes, isort, upgrades
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

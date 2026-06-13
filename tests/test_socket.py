@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from src.env.socket_bridge import AGENT_ORT, SocketBridge
+from src.env.socket_bridge import AGENT_PORT, SocketBridge
 
 
 # ---------------------------------------------------------------------------
