@@ -141,6 +141,16 @@ class BalatroEnv(gym.Env):
         self._step_count = 0
         self._selected_cards = []
 
+        # Wait for the game to (re)connect before issuing any action. The mod
+        # reconnects every frame, but start() returns before the TCP handshake
+        # completes — without this, the first reset() races the connection and
+        # send_action() raises "No game connected".
+        if not self._bridge.wait_for_connection(timeout=30.0):
+            raise RuntimeError(
+                "Balatro did not connect within 30s — is the game running "
+                "with the BalatroML mod loaded?"
+            )
+
         # Drain stale events from previous episode (Pitfall 2)
         while True:
             try:

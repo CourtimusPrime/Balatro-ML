@@ -12,7 +12,7 @@
 -- ---------------------------------------------------------------------------
 -- Load dependencies
 -- ---------------------------------------------------------------------------
-assert(SMODS.load_file("lib/json.lua"))()   -- json.encode / json.decode become global
+json = assert(SMODS.load_file("lib/json.lua"))()   -- expose json.encode / json.decode as a global (rxi/json.lua returns a local table)
 assert(SMODS.load_file("state.lua"))()      -- BML_State.snapshot() becomes global
 
 -- ---------------------------------------------------------------------------
@@ -60,11 +60,13 @@ function BML_Bridge.emit(event_name)
 
   local ok_snap, payload = pcall(BML_State.snapshot, event_name)
   if not ok_snap then
+    print("[BML] snapshot error on '" .. tostring(event_name) .. "': " .. tostring(payload))
     return   -- snapshot error; skip this emit rather than crashing
   end
 
   local ok_enc, encoded = pcall(json.encode, payload)
   if not ok_enc then
+    print("[BML] json.encode error on '" .. tostring(event_name) .. "': " .. tostring(encoded))
     return   -- encode error; skip
   end
 
@@ -137,6 +139,18 @@ function BML_Bridge._get_all_shop_items()
 end
 
 -- ---------------------------------------------------------------------------
+-- BML_Bridge._current_blind_opt
+-- ---------------------------------------------------------------------------
+-- Returns the UIBox for the blind currently on deck (Small/Big/Boss) from
+-- G.blind_select_opts, or nil when the blind-select screen isn't showing.
+-- select_blind / skip_blind locate their button elements within this box.
+function BML_Bridge._current_blind_opt()
+  if not G.blind_select_opts then return nil end
+  local key = string.lower(tostring((G.GAME and G.GAME.blind_on_deck) or "Small"))
+  return G.blind_select_opts[key]
+end
+
+-- ---------------------------------------------------------------------------
 -- BML_Bridge.dispatch
 -- ---------------------------------------------------------------------------
 -- Decodes an action dict (already json.decode'd in poll) and calls the
@@ -180,17 +194,24 @@ function BML_Bridge.dispatch(action)
   local ok, err = pcall(function()  -- luacheck: ignore err
 
     if name == "start_run" then
-      -- Guard: only valid when the main menu is showing.
-      if G.STATE == G.STATES.MENU then
-        G.start_run({
-          ante       = 1,
-          final_ante = 8,
-          seed       = "",
-          stake      = action.stake or 1,
-          challenge  = nil,
-          deck       = { config = { center_key = action.deck or "b_red" } },
-        })
+      -- Multi-game reset: if a run is already active (not at the main menu),
+      -- tear it down first so start_run can set up a clean run.
+      if G.STATE ~= G.STATES.MENU then
+        pcall(function() G:delete_run() end)
       end
+      -- Balatro's Game:start_run derives the deck from G.GAME.viewed_back.name
+      -- (resolved via get_deck_from_name over G.P_CENTERS), NOT from an args
+      -- field. Set viewed_back so the requested deck is honoured; if the key
+      -- is unknown, start_run falls back to 'Red Deck'.
+      local deck_key = action.deck or "b_red"
+      local center = G.P_CENTERS and G.P_CENTERS[deck_key]
+      if center and G.GAME then
+        G.GAME.viewed_back = { name = center.name }
+      end
+      -- start_run is a method (function Game:start_run); call with ':' so
+      -- self == G. Calling with '.' passes the args table as self and makes
+      -- self:prep_stage() fail (game.lua:2055).
+      G:start_run({ stake = action.stake or 1, seed = "" })
 
     elseif name == "toggle_card" then
       -- Python sends 0-based index; Lua cards table is 1-based.
@@ -239,16 +260,33 @@ function BML_Bridge.dispatch(action)
       G.FUNCS.toggle_shop({})
 
     elseif name == "select_blind" then
-      -- ASSUMED: G.FUNCS.select_blind — verify via probe_lua_funcs.py (02-04 checkpoint)
-      G.FUNCS.select_blind({})
+      -- G.FUNCS.select_blind(e) reads e.config.ref_table (the blind choice
+      -- config), so it needs the real 'select_blind_button' UI element from the
+      -- current blind's option box — not an empty table. Guarded so it no-ops
+      -- (rather than erroring) when the blind-select UI isn't present.
+      local opt = BML_Bridge._current_blind_opt()
+      local btn = opt and opt:get_UIE_by_ID("select_blind_button")
+      if btn then
+        G.FUNCS.select_blind(btn)
+      end
 
     elseif name == "skip_blind" then
-      -- ASSUMED: G.FUNCS.skip_blind — verify via probe_lua_funcs.py (02-04 checkpoint)
-      G.FUNCS.skip_blind({})
+      -- G.FUNCS.skip_blind(e) dereferences e.UIBox:get_UIE_by_ID('tag_container'),
+      -- so it needs the real 'tag_container' element from the current blind's
+      -- option box. Passing {} crashes on e.UIBox (button_callbacks.lua:2754).
+      -- Guarded so it no-ops when the blind-select UI isn't present.
+      local opt = BML_Bridge._current_blind_opt()
+      local tag_container = opt and opt:get_UIE_by_ID("tag_container")
+      if tag_container then
+        G.FUNCS.skip_blind(tag_container)
+      end
 
     end
   end)
   -- ok=false: game function errored or name was wrong; silently absorbed.
+  if not ok then
+    print("[BML] dispatch error for '" .. tostring(name) .. "': " .. tostring(err))
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -267,8 +305,8 @@ end
 -- On first emit only, state.lua includes debug_hand_names to capture live
 -- G.GAME.hands key strings during BRIDGE-05 verification.
 local _start_run = G.start_run
-G.start_run = function(args)
-  _start_run(args)
+G.start_run = function(self, args)
+  _start_run(self, args)
   BML_Bridge.emit("blind_start")
 end
 
@@ -315,22 +353,29 @@ G.FUNCS.discard_cards_from_highlighted = function(e)
 end
 
 -- ---------------------------------------------------------------------------
--- Event hook: draw — G.GAME.blind.drawn_to_hand
+-- Event hook: draw — G.FUNCS.draw_from_deck_to_hand
 -- ---------------------------------------------------------------------------
--- Wrapped after G.start_run sets up blind so the field is populated.
--- We re-wrap inside G.start_run to ensure it hooks the current round's function.
-local _start_run_for_draw = G.start_run
-G.start_run = function(args)
-  _start_run_for_draw(args)
-  -- Hook drawn_to_hand for the current blind object.
-  if G.GAME and G.GAME.blind and type(G.GAME.blind.drawn_to_hand) == "function" then
-    local _drawn_orig = G.GAME.blind.drawn_to_hand
-    G.GAME.blind.drawn_to_hand = function(self, ...)
-      local result = _drawn_orig(self, ...)
-      BML_Bridge.emit("draw")
-      return result
+-- draw_from_deck_to_hand draws the full hand in one call (after blind select
+-- and after each play/discard refill). We wrap this STABLE global rather than
+-- G.GAME.blind.drawn_to_hand, because G.GAME.blind is replaced when a blind is
+-- selected — hooking the start-of-run instance would be discarded. Same
+-- deferred-emit pattern as hand_played/discard so the snapshot is taken after
+-- the draw animation settles.
+local _draw_orig = G.FUNCS.draw_from_deck_to_hand
+G.FUNCS.draw_from_deck_to_hand = function(e)
+  local result = _draw_orig(e)
+  G.E_MANAGER:add_event(Event({
+    trigger  = "after",
+    delay    = 0.1,
+    blocking = false,
+    func     = function()
+      if #G.E_MANAGER.queues.base <= 3 then
+        BML_Bridge.emit("draw")
+      end
+      return true
     end
-  end
+  }))
+  return result
 end
 
 -- ---------------------------------------------------------------------------

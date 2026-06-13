@@ -226,6 +226,8 @@ function BML_State.snapshot(event_name)
   gs.joker_slots        = (G.GAME and G.GAME.max_jokers) or 0
   gs.consumable_slots   =
     (G.consumeables and G.consumeables.config and G.consumeables.config.card_limit) or 0
+  gs.reroll_cost        =
+    (G.GAME and G.GAME.current_round and G.GAME.current_round.reroll_cost) or 0
 
   -- hand_levels: dict keyed by hand name string (e.g. "High Card")
   gs.hand_levels = {}
@@ -238,16 +240,6 @@ function BML_State.snapshot(event_name)
   obs.game_state = gs
   obs.phase      = get_phase()
   obs.event      = event_name
-
-  -- debug_hand_names: emitted only on blind_start to capture live hand name strings
-  -- during BRIDGE-05 verification. Gate behind DEBUG flag or remove after verification.
-  if event_name == "blind_start" and G.GAME and G.GAME.hands then
-    local names = {}
-    for k, _ in pairs(G.GAME.hands) do
-      names[#names + 1] = k
-    end
-    obs.debug_hand_names = names
-  end
 
   return obs
 end
