@@ -21,6 +21,11 @@ from __future__ import annotations
 
 import queue
 import sys
+from pathlib import Path
+
+# Make `src.*` importable when this script is run directly (python scripts/verify_bridge.py),
+# not just under pytest. Repo root is this file's parent's parent.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loguru import logger
 
