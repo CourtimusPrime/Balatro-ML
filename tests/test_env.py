@@ -4,8 +4,8 @@ Tests for BalatroEnv (ENV-01, ENV-03, ENV-04).
 ENV-01 (action space unit tests) — run fully offline; test action_space.py directly
     with no mock or live game needed.
 
-ENV-03 (offline env tests) — stub; will be RED until Plan 03 creates gymnasium_env.py.
-    Uses mock_bridge fixture that patches SocketBridge.
+ENV-03 (offline env tests) — uses mock_env fixture from conftest.py that patches
+    SocketBridge. No live socket or Balatro game required.
 
 ENV-04 (integration test) — skip-marked; requires a live Balatro game (set BALATRO_LIVE=1).
 """
@@ -35,7 +35,7 @@ BALATRO_LIVE = pytest.mark.skipif(
 )
 
 # ---------------------------------------------------------------------------
-# ENV-03 fixture — BalatroEnv with SocketBridge replaced by a MagicMock
+# ENV-03 fixture — kept for backward compat; conftest.py provides mock_env
 # ---------------------------------------------------------------------------
 
 
@@ -189,44 +189,92 @@ def test_build_mask_no_discards():
 
 
 # ---------------------------------------------------------------------------
-# ENV-03 stubs (RED until Plan 03 creates gymnasium_env.py)
+# ENV-03: Offline env tests — use mock_env fixture from conftest.py
 # ---------------------------------------------------------------------------
 
 
-def test_reset_returns_valid_obs(mock_bridge):
-    """ENV-03 stub: reset() returns (dict, dict) matching observation_space keys."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_reset_returns_valid_obs(mock_env, minimal_raw_obs):
+    """ENV-03: reset() returns (dict, dict) with observation_space keys."""
+    env, mock = mock_env
+    mock.get_state.return_value = minimal_raw_obs
+
+    result = env.reset()
+
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    obs_dict, info = result
+    assert isinstance(obs_dict, dict)
+    assert isinstance(info, dict)
+    expected_keys = {"cards", "jokers", "consumables", "shop", "game_state"}
+    assert set(obs_dict.keys()) == expected_keys
 
 
-def test_step_return_signature(mock_bridge):
-    """ENV-03 stub: step() returns (dict, float, bool, bool, dict)."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_step_return_signature(mock_env, minimal_raw_obs):
+    """ENV-03: step() returns (dict, float, bool, bool, dict)."""
+    env, mock = mock_env
+    # reset first then step
+    mock.get_state.side_effect = [minimal_raw_obs, minimal_raw_obs]
+
+    env.reset()
+    result = env.step(8)  # commit_play
+
+    assert isinstance(result, tuple)
+    assert len(result) == 5
+    obs, reward, terminated, truncated, info = result
+    assert isinstance(obs, dict)
+    assert isinstance(reward, float)
+    assert isinstance(terminated, bool)
+    assert isinstance(truncated, bool)
+    assert isinstance(info, dict)
 
 
-def test_action_masks_shape_on_env(mock_bridge):
-    """ENV-03 stub: action_masks() returns np.ndarray shape (31,) dtype bool."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_action_masks_shape_on_env(mock_env):
+    """ENV-03: action_masks() returns np.ndarray shape (31,) dtype bool."""
+    env, _mock = mock_env
+    masks = env.action_masks()
+    assert isinstance(masks, np.ndarray)
+    assert masks.shape == (N_ACTIONS,)
+    assert masks.dtype == bool
 
 
-def test_action_masks_phase_routing(mock_bridge):
-    """ENV-03 stub: phase routing masks off wrong-phase actions."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_action_masks_phase_routing(mock_env):
+    """ENV-03: phase routing masks off wrong-phase actions."""
+    env, _mock = mock_env
+
+    # Playing phase: shop action (leave_shop) must be off
+    env._current_phase = "playing"
+    masks = env.action_masks()
+    assert not masks[ACTION_INDEX["leave_shop"]]
+
+    # Shop phase: playing action (commit_play) must be off
+    env._current_phase = "shop"
+    masks = env.action_masks()
+    assert not masks[ACTION_INDEX["commit_play"]]
 
 
-def test_check_env(mock_bridge):
-    """ENV-03 stub: gymnasium check_env passes without warnings."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_check_env(mock_env, minimal_raw_obs):
+    """ENV-03: gymnasium check_env passes without errors against mock bridge."""
+    from gymnasium.utils.env_checker import check_env  # noqa: PLC0415
+
+    env, mock = mock_env
+    # check_env calls reset() then multiple steps; provide many raw obs responses
+    mock.get_state.return_value = minimal_raw_obs
+
+    check_env(env, skip_render_check=True)
 
 
-def test_maskable_ppo_constructs(mock_bridge):
-    """ENV-03 stub: MaskablePPO('MultiInputPolicy', env) constructs without error."""
-    env, mock = mock_bridge
-    assert env is not None
+def test_maskable_ppo_constructs(mock_env):
+    """ENV-03: MaskablePPO('MultiInputPolicy', env) constructs without error."""
+    from sb3_contrib import MaskablePPO  # noqa: PLC0415
+
+    env, _mock = mock_env
+    model = MaskablePPO(
+        "MultiInputPolicy",
+        env,
+        verbose=0,
+        policy_kwargs={"normalize_images": False},
+    )
+    assert model is not None
 
 
 # ---------------------------------------------------------------------------
