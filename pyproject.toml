@@ -1,0 +1,48 @@
+[project]
+name = "balatro-ml"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+dependencies = [
+    # RL core
+    "gymnasium>=0.29",
+    "stable-baselines3>=2.3",
+    "torch>=2.3",
+    
+    # Data
+    "numpy>=1.26",
+    "pandas>=2.0",
+    
+    # Dashboard
+    "streamlit>=1.35",
+    "plotly>=5.20",
+    
+    # Utilities
+    "pydantic>=2.0",       # observation schema validation
+    "loguru>=0.7",         # better logging than stdlib
+    "typer>=0.12",         # CLI entrypoints
+    "rich>=13.0",          # pretty terminal output
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",           # linter + formatter
+    "pyright>=1.1",        # type checker
+]
+
+[project.scripts]
+train     = "scripts.train:main"
+dashboard = "scripts.dashboard:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]  # errors, pyflakes, isort, upgrades
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
