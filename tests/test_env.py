@@ -23,9 +23,6 @@ import pytest
 
 from src.env.action_space import N_ACTIONS, ACTION_INDEX, decode_action, build_mask
 
-# ENV-03/ENV-04: BalatroEnv import — will ImportError until Plan 03 creates gymnasium_env.py
-from src.env.gymnasium_env import BalatroEnv  # noqa: F401 — import triggers error until implemented
-
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
@@ -44,7 +41,13 @@ BALATRO_LIVE = pytest.mark.skipif(
 
 @pytest.fixture()
 def mock_bridge(monkeypatch):
-    """BalatroEnv with SocketBridge replaced by a MagicMock — no live socket."""
+    """BalatroEnv with SocketBridge replaced by a MagicMock — no live socket.
+
+    NOTE: importing BalatroEnv inside the fixture keeps the module importable
+    even when gymnasium_env.py is still a stub (RED until Plan 03).
+    """
+    from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+
     mock = MagicMock()
     mock.is_connected = True
     with patch("src.env.gymnasium_env.SocketBridge", return_value=mock):
@@ -234,6 +237,8 @@ def test_maskable_ppo_constructs(mock_bridge):
 @BALATRO_LIVE
 def test_random_agent_10_games():
     """ENV-04: random agent completes 10 full games, zero illegal actions, done fires."""
+    from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+
     env = BalatroEnv(deck="b_red", stake=1)
     for game in range(10):
         obs, info = env.reset()
