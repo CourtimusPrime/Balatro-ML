@@ -6,7 +6,6 @@ logs/
 # UV
 .venv/
 .python-version
-uv.lock
 
 # Python
 __pycache__/
@@ -16,3 +15,6 @@ __pycache__/
 
 # Balatro mod compiled
 mod/*.jkr
+
+# Other
+balatro_ml.egg-info/

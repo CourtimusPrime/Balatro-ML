@@ -1,4 +1,4 @@
-# Balatro ML
+# 🃏 Balatro ML
 
 A reinforcement learning agent that learns to maximise scores across all decks and antes in Balatro. The agent trains 24/7 via self-play and optionally ingests human gameplay sessions to bootstrap strategy.
 
