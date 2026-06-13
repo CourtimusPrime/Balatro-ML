@@ -36,8 +36,8 @@ from src.env.observation import parse_observation
 # Module-level timeout constants
 # ---------------------------------------------------------------------------
 
-CONNECTION_TIMEOUT: float = 60.0   # seconds to wait for Balatro to connect
-OBSERVATION_TIMEOUT: float = 30.0  # seconds to wait for the first game event
+CONNECTION_TIMEOUT: float = 300.0  # seconds to wait for Balatro to connect (manual-run friendly)
+OBSERVATION_TIMEOUT: float = 300.0  # seconds to wait for each game event (manual-run friendly)
 
 # ---------------------------------------------------------------------------
 # Suit/value human-readable references (for the manual checklist log)
@@ -85,62 +85,65 @@ def main() -> None:
         bridge.stop()
         sys.exit(1)
 
-    logger.info("Game connected. Waiting for first observation ...")
+    logger.info("Game connected. Start a run / play a hand to trigger events.")
+    logger.info("Each event prints a decoded snapshot below. Press Ctrl+C when done.")
 
+    count = 0
     try:
-        raw = bridge.get_state(timeout=OBSERVATION_TIMEOUT)
-    except queue.Empty:
-        logger.error(
-            f"No observation received within {OBSERVATION_TIMEOUT}s. "
-            "Start a new run in Balatro to trigger a game-state event."
-        )
+        while True:
+            try:
+                raw = bridge.get_state(timeout=OBSERVATION_TIMEOUT)
+            except queue.Empty:
+                logger.error(
+                    f"No observation within {OBSERVATION_TIMEOUT}s. "
+                    "Start a run / play a hand in Balatro to trigger an event."
+                )
+                continue
+
+            count += 1
+            logger.info("-" * 60)
+            logger.info(f"Observation #{count} | raw event={raw.get('event')!r}")
+            if "debug_hand_names" in raw:
+                logger.info(f"  debug_hand_names = {raw['debug_hand_names']}")
+
+            # Validate with Pydantic — let ValidationError propagate so the full
+            # error is printed; parse_observation logs the raw payload at ERROR.
+            obs = parse_observation(raw)
+
+            logger.info(f"  event={obs.event!r}  phase={obs.phase!r}")
+            hand_cards = [c for c in obs.cards if c.in_hand]
+            logger.info(f"  cards total={len(obs.cards)}  in hand={len(hand_cards)}")
+            for i, card in enumerate(hand_cards):
+                logger.info(
+                    f"    hand[{i:>2}]: suit={card.suit} ({_suit_label(card.suit)})"
+                    f"  value={card.value} ({_value_label(card.value)})"
+                    f"  enhancement={card.enhancement}"
+                    f"  edition={card.edition}"
+                    f"  seal={card.seal}"
+                    f"  debuffed={card.debuffed}"
+                )
+
+            if obs.jokers:
+                logger.info(f"  jokers={len(obs.jokers)}")
+                for i, joker in enumerate(obs.jokers):
+                    logger.info(
+                        f"    joker[{i:>2}]: id={joker.id}"
+                        f"  edition={joker.edition}"
+                        f"  eternal={joker.eternal}"
+                        f"  sell_value={joker.sell_value}"
+                    )
+
+            gs = obs.game_state
+            logger.info(
+                f"  game_state: ante={gs.ante}"
+                f"  chips_scored={gs.chips_scored}"
+                f"  hands_remaining={gs.hands_remaining}"
+                f"  money={gs.money}"
+            )
+    except KeyboardInterrupt:
+        logger.info(f"\nBRIDGE-05 probe stopped — {count} observation(s) decoded.")
+    finally:
         bridge.stop()
-        sys.exit(1)
-
-    logger.info(f"Raw payload received | event={raw.get('event')!r}")
-
-    # Validate with Pydantic — let ValidationError propagate so the full error
-    # is printed; it will also log the raw payload at ERROR level inside
-    # parse_observation().
-    obs = parse_observation(raw)
-
-    # ------------------------------------------------------------------
-    # Decoded field dump — compare against on-screen board
-    # ------------------------------------------------------------------
-
-    logger.info(f"Observation | event={obs.event!r}  phase={obs.phase!r}")
-
-    logger.info(f"Cards in observation: {len(obs.cards)}")
-    for i, card in enumerate(obs.cards):
-        logger.info(
-            f"  Card {i:>2}: suit={card.suit} ({_suit_label(card.suit)})"
-            f"  value={card.value} ({_value_label(card.value)})"
-            f"  enhancement={card.enhancement}"
-            f"  edition={card.edition}"
-            f"  seal={card.seal}"
-            f"  debuffed={card.debuffed}"
-            f"  in_hand={card.in_hand}"
-        )
-
-    logger.info(f"Jokers in observation: {len(obs.jokers)}")
-    for i, joker in enumerate(obs.jokers):
-        logger.info(
-            f"  Joker {i:>2}: id={joker.id}"
-            f"  edition={joker.edition}"
-            f"  eternal={joker.eternal}"
-            f"  sell_value={joker.sell_value}"
-        )
-
-    gs = obs.game_state
-    logger.info(
-        f"Game state: ante={gs.ante}"
-        f"  chips_scored={gs.chips_scored}"
-        f"  hands_remaining={gs.hands_remaining}"
-        f"  money={gs.money}"
-    )
-
-    bridge.stop()
-    logger.info("BRIDGE-05 probe complete.")
     sys.exit(0)
 
 
