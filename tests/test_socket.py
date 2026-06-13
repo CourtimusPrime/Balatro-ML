@@ -77,10 +77,17 @@ def test_wait_for_connection_timeout(bridge: SocketBridge):
 def test_connection_detected(bridge: SocketBridge):
     async def go():
         reader, writer = await _connect(bridge.port)
+        # Assert while the connection is still open — closing first races the
+        # bridge's disconnect cleanup, which clears the _connected flag.
+        loop = asyncio.get_event_loop()
+        connected = await loop.run_in_executor(
+            None, lambda: bridge.wait_for_connection(timeout=2.0)
+        )
+        assert connected
         writer.close()
+        await writer.wait_closed()
 
     asyncio.run(go())
-    assert bridge.wait_for_connection(timeout=2.0)
 
 
 def test_get_state_receives_json_event(bridge: SocketBridge):
