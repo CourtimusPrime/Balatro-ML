@@ -279,6 +279,235 @@ def test_maskable_ppo_constructs(mock_env):
 
 
 # ---------------------------------------------------------------------------
+# ENV-01 / ENV-03: Booster-pack action + mask stubs (Wave 0 RED)
+#
+# These stubs assert the REAL intended behaviour for Phase 02.1.
+# They FAIL until Slice A (02.1-02) implements the production code.
+# Do NOT edit test_n_actions / test_action_index_unique / test_decode_action_invalid
+# here — Slice A (plan 02.1-02) owns those contract updates.
+# ---------------------------------------------------------------------------
+
+
+def test_decode_action_booster_pack():
+    """decode_action(31..36) return correct dicts; decode_action(37) raises.
+
+    RED: fails until Slice A adds SELECT_PACK_CARD_BASE=31 / SKIP_PACK=36 / N_ACTIONS=37.
+    """
+    # Indices 31-35: select_pack_card_0..4
+    assert decode_action(31) == {"action": "select_pack_card", "index": 0}
+    assert decode_action(35) == {"action": "select_pack_card", "index": 4}
+    # Index 36: skip_pack
+    assert decode_action(36) == {"action": "skip_pack"}
+    # Index 37: invalid (new upper bound)
+    with pytest.raises(ValueError):
+        decode_action(37)
+
+
+def test_booster_pack_mask():
+    """build_mask("booster_pack", picks=1, 1 occupied Tarot card) enables select_pack_card_0 + skip_pack.
+
+    RED: fails until Slice A adds the booster_pack branch to build_mask.
+    """
+    # One Tarot card in slot 0; consumable slot free (1 consumable, 2 slots).
+    tarot_card = {"type": "Tarot", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    mask = build_mask(
+        phase="booster_pack",
+        hand_size=0,
+        n_selected=0,
+        discards_remaining=0,
+        shop_items=[],
+        jokers=[],
+        consumables=[None],
+        money=0,
+        reroll_cost=0,
+        pack_cards=[tarot_card, None, None, None, None],
+        pack_picks_remaining=1,
+        consumable_slots=2,
+        joker_slots=5,
+    )
+    # select_pack_card_0 (index 31) must be True; others (32-35) False (empty slots)
+    assert bool(mask[31]), "select_pack_card_0 should be True for occupied Tarot + free slot"
+    assert not any(mask[32:36]), "select_pack_card_1..4 should be False (empty slots)"
+    # skip_pack (36) must always be True
+    assert bool(mask[36]), "skip_pack must always be True"
+
+
+def test_picks_zero():
+    """build_mask("booster_pack", picks=0) enables only skip_pack (no selects).
+
+    RED: fails until Slice A adds the booster_pack branch to build_mask.
+    """
+    tarot_card = {"type": "Tarot", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    mask = build_mask(
+        phase="booster_pack",
+        hand_size=0,
+        n_selected=0,
+        discards_remaining=0,
+        shop_items=[],
+        jokers=[],
+        consumables=[],
+        money=0,
+        reroll_cost=0,
+        pack_cards=[tarot_card, tarot_card, tarot_card, None, None],
+        pack_picks_remaining=0,
+        consumable_slots=2,
+        joker_slots=5,
+    )
+    # No select_pack_card_i should be True when picks exhausted
+    assert not any(mask[31:36]), "No selects legal when picks=0"
+    # skip_pack must still be True
+    assert bool(mask[36]), "skip_pack must always be True"
+
+
+def test_slot_gate():
+    """Tarot/Spectral select masked off when all consumable slots are full; skip_pack still legal.
+
+    RED: fails until Slice A adds slot-gating logic in build_mask.
+    """
+    # 2 consumables in 2 slots → no free slot
+    tarot_card = {"type": "Tarot", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    spectral_card = {"type": "Spectral", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    occupied_consumables = [{"id": "c_fool", "type": 0}, {"id": "c_magician", "type": 0}]
+
+    mask = build_mask(
+        phase="booster_pack",
+        hand_size=0,
+        n_selected=0,
+        discards_remaining=0,
+        shop_items=[],
+        jokers=[],
+        consumables=occupied_consumables,
+        money=0,
+        reroll_cost=0,
+        pack_cards=[tarot_card, spectral_card, None, None, None],
+        pack_picks_remaining=1,
+        consumable_slots=2,
+        joker_slots=5,
+    )
+    # Tarot (slot 0) and Spectral (slot 1) must be masked off — no free consumable slot
+    assert not bool(mask[31]), "Tarot select must be masked when consumable slots full"
+    assert not bool(mask[32]), "Spectral select must be masked when consumable slots full"
+    # skip_pack must still be True (success criterion 6)
+    assert bool(mask[36]), "skip_pack must always be True even when all selects gated"
+
+
+def test_skip_always_legal():
+    """skip_pack (index 36) is True in EVERY booster_pack mask scenario (property test).
+
+    RED: fails until Slice A adds the booster_pack branch to build_mask.
+    """
+    # Test a range of scenarios; skip_pack must be True in every case.
+    planet_card = {"type": "Planet", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    tarot_card = {"type": "Tarot", "id": 0, "cost": 0, "edition": 0, "enhancement": 0, "seal": 0}
+    occupied_consumables = [{"id": "c_fool", "type": 0}, {"id": "c_magician", "type": 0}]
+
+    scenarios = [
+        # (picks_remaining, pack_cards, consumables, consumable_slots, description)
+        (1, [planet_card], [], 2, "single Planet, free slot"),
+        (0, [planet_card], [], 2, "picks exhausted"),
+        (1, [tarot_card], occupied_consumables, 2, "Tarot, slots full"),
+        (2, [tarot_card, planet_card, None, None, None], [], 2, "Mega pack, 2 picks left"),
+        (0, [], [], 2, "empty pack, picks=0"),
+    ]
+    for picks, pack_cards, consumables, consumable_slots, description in scenarios:
+        mask = build_mask(
+            phase="booster_pack",
+            hand_size=0,
+            n_selected=0,
+            discards_remaining=0,
+            shop_items=[],
+            jokers=[],
+            consumables=consumables,
+            money=0,
+            reroll_cost=0,
+            pack_cards=pack_cards,
+            pack_picks_remaining=picks,
+            consumable_slots=consumable_slots,
+            joker_slots=5,
+        )
+        assert bool(mask[36]), f"skip_pack must be True in scenario: {description}"
+
+
+def test_shop_buys_booster_transition():
+    """Buying a type==6 shop item (booster pack) is mask-legal when affordable.
+
+    RED: fails until Slice A implements the shop mask affordability for type==6 items.
+    Shop mask must allow buy_i for a booster-pack item when player has enough money.
+    This tests the transition affordability, not the phase switch itself (which is Lua).
+    """
+    booster_pack_item = {"type": "Booster", "id": "p_arcana_1", "cost": 4, "edition": 0, "enhancement": 0, "seal": 0}
+    mask = build_mask(
+        phase="shop",
+        hand_size=0,
+        n_selected=0,
+        discards_remaining=0,
+        shop_items=[booster_pack_item],
+        jokers=[],
+        consumables=[],
+        money=10,
+        reroll_cost=5,
+    )
+    # buy_0 (index 10) must be True when we have enough money for a $4 pack
+    assert bool(mask[10]), "buy_0 must be legal when shop has a booster pack and player has money"
+
+
+def test_pack_obs_booster_fixture(booster_raw_obs):
+    """pack Box populated from a booster fixture; FullObservation accepts pack payload.
+
+    RED: fails until Slice B adds pack field to FullObservation and extends gymnasium_env.
+    """
+    from src.env.observation import parse_observation  # noqa: PLC0415
+
+    obs = parse_observation(booster_raw_obs)
+    # Phase should be booster_pack
+    assert obs.phase == "booster_pack"
+    # pack list should have 3 Tarot cards (from booster_pack_state.json)
+    assert len(obs.pack) == 3
+    # Each pack item should have type resolved as integer (Tarot → 1)
+    assert obs.pack[0].type == 1
+
+
+def test_pack_obs_contains(mock_env, booster_raw_obs):
+    """observation_space.contains(obs) True with a booster fixture (inc. pack Box).
+
+    RED: fails until Slice B adds pack Box to observation_space and wires encoding.
+    """
+    env, mock = mock_env
+    mock.get_state.return_value = booster_raw_obs
+    obs_dict, _info = env.reset()
+    assert "pack" in obs_dict, "pack key must be present in obs dict"
+    assert env.observation_space.contains(obs_dict), (
+        "observation_space.contains must be True with booster_pack obs"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ENV-04 (live): live pack acceptance tests — skip unless BALATRO_LIVE=1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("BALATRO_LIVE"),
+    reason="Requires live Balatro game (set BALATRO_LIVE=1)",
+)
+def test_live_pack_celestial_levels_hand():
+    """SC-3: Buying a Celestial pack and selecting a Planet card levels a hand.
+
+    Manual/live — requires Balatro running with mod loaded.
+    """
+    from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+
+    env = BalatroEnv(deck="b_red", stake=1)
+    try:
+        obs, _ = env.reset()
+        # Navigate to a Celestial pack scenario; then select a Planet card
+        # and verify hand_levels increased. Full test body written by live acceptance.
+        raise NotImplementedError("Live pack test not yet implemented — scaffold only")
+    finally:
+        env.close()
+
+
+# ---------------------------------------------------------------------------
 # ENV-04: Integration test — requires live Balatro (skip unless BALATRO_LIVE=1)
 # ---------------------------------------------------------------------------
 

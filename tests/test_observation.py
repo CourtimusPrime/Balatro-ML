@@ -150,3 +150,104 @@ def test_shop_empty_during_playing():
     obs = parse_observation(raw)
     assert obs.shop.items == []
     assert obs.shop.reroll_cost == 5
+
+
+# ---------------------------------------------------------------------------
+# Pack observation stubs (Wave 0 RED) — turned GREEN by Slice B (plan 02.1-03)
+#
+# These stubs assert the REAL intended pydantic/pack behaviour.
+# They FAIL now because FullObservation has no `pack` field yet.
+# Data-integrity contract: malformed pack payload MUST raise ValidationError
+# (CLAUDE.md directive: malformed socket data must raise Pydantic ValidationError).
+# ---------------------------------------------------------------------------
+
+
+def test_pack_field_accepts_booster_payload():
+    """FullObservation accepts a booster_pack payload with a non-empty pack list.
+
+    RED: fails until Slice B adds `pack: list[ShopItemObs] = []` to FullObservation.
+    """
+    raw = json.loads((FIXTURES_DIR / "booster_pack_state.json").read_text())
+    obs = parse_observation(raw)
+    assert isinstance(obs, FullObservation)
+    assert obs.phase == "booster_pack"
+    # pack list must be accessible and non-empty (3 Tarot cards)
+    assert hasattr(obs, "pack"), "FullObservation must have a pack attribute"
+    assert len(obs.pack) == 3
+
+
+def test_pack_field_default_empty_for_non_pack_phase():
+    """Non-pack phase (playing) validates successfully with default-empty pack list.
+
+    RED: fails until Slice B adds `pack: list[ShopItemObs] = []` (with default) to FullObservation.
+    The default ensures existing sample_state.json and all non-pack fixtures keep validating.
+    """
+    raw = json.loads((FIXTURES_DIR / "sample_state.json").read_text())
+    obs = parse_observation(raw)
+    assert isinstance(obs, FullObservation)
+    assert obs.phase == "playing"
+    # pack must be present with default empty list when not in booster_pack phase
+    assert hasattr(obs, "pack"), "FullObservation must have a pack attribute even in non-pack phases"
+    assert obs.pack == [], "pack should default to [] for non-pack phase"
+
+
+def test_pack_scalars_on_game_state():
+    """GameStateObs exposes pack_picks_remaining and pack_type from a booster fixture.
+
+    RED: fails until Slice B adds `pack_picks_remaining: int = 0` and `pack_type: int = -1`
+    to GameStateObs.
+    """
+    raw = json.loads((FIXTURES_DIR / "booster_pack_state.json").read_text())
+    obs = parse_observation(raw)
+    gs = obs.game_state
+    assert hasattr(gs, "pack_picks_remaining"), "GameStateObs must have pack_picks_remaining"
+    assert hasattr(gs, "pack_type"), "GameStateObs must have pack_type"
+    # Arcana → pack_type int (via PACK_TYPE_MAP: Arcana=0)
+    assert gs.pack_picks_remaining == 1
+    assert gs.pack_type == 0  # Arcana maps to 0
+
+
+def test_pack_scalars_default_for_non_pack_phase():
+    """GameStateObs pack scalars default to 0 / -1 when not in booster_pack phase.
+
+    RED: fails until Slice B adds defaulted pack scalars to GameStateObs.
+    Defaults ensure sample_state.json (which has no pack_picks_remaining / pack_type)
+    keeps validating under extra='forbid'.
+    """
+    raw = json.loads((FIXTURES_DIR / "sample_state.json").read_text())
+    obs = parse_observation(raw)
+    gs = obs.game_state
+    assert hasattr(gs, "pack_picks_remaining"), "GameStateObs must have pack_picks_remaining"
+    assert hasattr(gs, "pack_type"), "GameStateObs must have pack_type"
+    assert gs.pack_picks_remaining == 0, "pack_picks_remaining should default to 0"
+    assert gs.pack_type == -1, "pack_type should default to -1 when no pack open"
+
+
+def test_malformed_pack_row_raises_validation_error():
+    """A malformed pack row (missing required field) raises pydantic ValidationError.
+
+    RED: fails until Slice B adds pack field to FullObservation.
+    Data-integrity contract from CLAUDE.md: malformed socket data MUST raise ValidationError.
+    """
+    raw = json.loads((FIXTURES_DIR / "booster_pack_state.json").read_text())
+    # Corrupt the first pack row — remove required 'type' field
+    raw["pack"][0] = {"id": "c_fool", "cost": 0}  # missing type, edition, enhancement, seal
+    with pytest.raises(ValidationError):
+        parse_observation(raw)
+
+
+def test_standard_pack_base_type_id_minus_one():
+    """Standard pack (Base type playing cards) validates with id==-1 (low=-1 Box contract).
+
+    RED: fails until Slice B adds pack field to FullObservation (and gymnasium_env
+    sets pack Box low=-1).
+    Standard packs always show playing cards which resolve to id==-1 via _resolve_id_by_type.
+    """
+    raw = json.loads((FIXTURES_DIR / "booster_pack_standard.json").read_text())
+    obs = parse_observation(raw)
+    assert isinstance(obs, FullObservation)
+    assert obs.phase == "booster_pack"
+    assert hasattr(obs, "pack"), "FullObservation must have a pack attribute"
+    # All pack cards are Base type → id resolves to -1
+    for pack_card in obs.pack:
+        assert pack_card.id == -1, f"Base pack card must have id==-1, got {pack_card.id}"

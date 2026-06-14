@@ -2,18 +2,23 @@
 Shared pytest fixtures for the BalatroEnv test suite.
 
 Provides:
-  mock_env       — BalatroEnv with SocketBridge replaced by a MagicMock; no TCP.
+  mock_env        — BalatroEnv with SocketBridge replaced by a MagicMock; no TCP.
   minimal_raw_obs — raw dict matching FullObservation wire format; minimal valid state.
+  booster_raw_obs — raw dict matching FullObservation wire format; booster_pack phase.
 """
 
 from __future__ import annotations
 
+import json
 import queue
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.env.gymnasium_env import BalatroEnv
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------
@@ -108,3 +113,19 @@ def minimal_raw_obs():
             "reroll_cost": 2,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# booster_raw_obs fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def booster_raw_obs():
+    """Return a raw dict matching the FullObservation wire format for the booster_pack phase.
+
+    Mirrors booster_pack_state.json: Arcana pack, 3 Tarot card options,
+    pack_picks_remaining=1, pack_type="Arcana".  Used for offline booster-pack
+    env and observation tests (Wave 0 scaffold; turned GREEN by Slice B).
+    """
+    return json.loads((FIXTURES_DIR / "booster_pack_state.json").read_text())
