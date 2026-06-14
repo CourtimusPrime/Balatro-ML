@@ -16,7 +16,7 @@ Maps exported
 -------------
 SUIT_MAP, VALUE_MAP, ENHANCEMENT_MAP, EDITION_MAP, SEAL_MAP,
 JOKER_ID_MAP, TAROT_ID_MAP, PLANET_ID_MAP, SPECTRAL_ID_MAP,
-CONSUMABLE_TYPE_MAP, VOUCHER_ID_MAP, BOSS_BLIND_ID_MAP
+CONSUMABLE_TYPE_MAP, PACK_TYPE_MAP, VOUCHER_ID_MAP, BOSS_BLIND_ID_MAP
 """
 
 from __future__ import annotations
@@ -328,6 +328,18 @@ CONSUMABLE_TYPE_MAP: dict[str, int] = {
     "Tarot":    0,
     "Planet":   1,
     "Spectral": 2,
+}
+
+# ---------------------------------------------------------------------------
+# Pack type map — pack_type string emitted by state.lua (derived from G.STATE)
+# ---------------------------------------------------------------------------
+
+PACK_TYPE_MAP: dict[str, int] = {
+    "Arcana":    0,
+    "Celestial": 1,
+    "Standard":  2,
+    "Buffoon":   3,
+    "Spectral":  4,
 }
 
 # ---------------------------------------------------------------------------

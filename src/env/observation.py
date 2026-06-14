@@ -23,6 +23,7 @@ from src.data.normalise import (
     PLANET_ID_MAP,
     SPECTRAL_ID_MAP,
     CONSUMABLE_TYPE_MAP,
+    PACK_TYPE_MAP,
     VOUCHER_ID_MAP,
     BOSS_BLIND_ID_MAP,
     _get,
@@ -276,6 +277,15 @@ class GameStateObs(BaseModel):
     consumable_slots:   int
     hand_levels:        dict[str, int]   # hand name → level (raw string keys)
     reroll_cost:        int
+    pack_picks_remaining: int = 0   # remaining picks in open booster pack; 0 outside pack phase
+    pack_type:          int = -1    # PACK_TYPE_MAP int; -1 when no pack open
+
+    @field_validator("pack_type", mode="before")
+    @classmethod
+    def _pack_type(cls, v: object) -> int:
+        if isinstance(v, str):
+            return _map(PACK_TYPE_MAP, v, absent_sentinel=-1)
+        return _map(PACK_TYPE_MAP, v, absent_sentinel=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +302,9 @@ class FullObservation(BaseModel):
     consumables: list[ConsumableObs]
     shop:        ShopObs
     game_state:  GameStateObs
-    phase:       str   # "playing" | "shop" | "blind_select"
+    phase:       str   # "playing" | "shop" | "blind_select" | "booster_pack"
     event:       str   # "draw" | "hand_played" | "discard" | "blind_start" | ...
+    pack:        list[ShopItemObs] = []   # offered cards in open booster pack; [] outside pack phase
 
 
 # ---------------------------------------------------------------------------
