@@ -19,6 +19,7 @@ from src.env.observation import (
     ConsumableObs,
     FullObservation,
     JokerObs,
+    LastHandObs,
     parse_observation,
 )
 
@@ -150,6 +151,49 @@ def test_shop_empty_during_playing():
     obs = parse_observation(raw)
     assert obs.shop.items == []
     assert obs.shop.reroll_cost == 5
+
+
+# ---------------------------------------------------------------------------
+# LastHandObs tests (DASH-02) — hand_played carries hand_type/chips/mult/n_cards
+# ---------------------------------------------------------------------------
+
+
+def test_last_hand_parses_on_hand_played():
+    """FullObservation parses a hand_played payload that carries last_hand."""
+    raw = json.loads((FIXTURES_DIR / "sample_state.json").read_text())
+    raw["event"] = "hand_played"
+    raw["last_hand"] = {
+        "hand_type": "Flush",
+        "chips": 140,
+        "mult": 4,
+        "n_cards": 5,
+    }
+    obs = parse_observation(raw)
+    assert isinstance(obs, FullObservation)
+    assert isinstance(obs.last_hand, LastHandObs)
+    assert obs.last_hand.hand_type == "Flush"
+    assert obs.last_hand.chips == 140
+    assert obs.last_hand.mult == 4
+    assert obs.last_hand.n_cards == 5
+
+
+def test_last_hand_defaults_none_without_field():
+    """A non-hand_played payload (no last_hand key) defaults last_hand to None."""
+    raw = json.loads((FIXTURES_DIR / "sample_state.json").read_text())
+    obs = parse_observation(raw)
+    assert obs.last_hand is None
+
+
+def test_last_hand_malformed_raises():
+    """A malformed last_hand row (missing required field) raises ValidationError.
+
+    Data-integrity contract (CLAUDE.md): malformed socket data MUST raise.
+    """
+    raw = json.loads((FIXTURES_DIR / "sample_state.json").read_text())
+    raw["event"] = "hand_played"
+    raw["last_hand"] = {"hand_type": "Flush"}  # missing chips/mult/n_cards
+    with pytest.raises(ValidationError):
+        parse_observation(raw)
 
 
 # ---------------------------------------------------------------------------

@@ -287,6 +287,58 @@ function BML_State.snapshot(event_name)
     end
   end
 
+  -- last_hand: the scored poker hand, emitted ONLY on a hand_played event so
+  -- the dashboard's best-run hand-by-hand (Panel 5) and hand-type-frequency
+  -- (Panel 6) panels have real data (03-RESEARCH Pitfall 4 option b). Omitted
+  -- (nil -> JSON null / absent) for every other event; observation.py defaults
+  -- FullObservation.last_hand to None.
+  -- Every G.* access is nil-guarded exactly like the surrounding code so a
+  -- missing global degrades to a default rather than erroring.
+  if event_name == "hand_played" then
+    -- Poker hand name: the most-recently-scored hand type.
+    -- [ASSUMED: G.GAME.last_hand_played holds the scored poker hand key on a
+    --  hand_played event. verify via reload_mod.py during 03-04 live seed.]
+    local hand_type = (G.GAME and G.GAME.last_hand_played) or ""
+    -- Fallback: G.GAME.current_round.current_hand.handname (the round's current
+    -- displayed hand) when last_hand_played is absent.
+    -- [ASSUMED: current_round.current_hand.handname; verify at 03-04.]
+    if hand_type == "" and G.GAME and G.GAME.current_round
+        and G.GAME.current_round.current_hand then
+      hand_type = G.GAME.current_round.current_hand.handname or ""
+    end
+
+    -- Per-hand chips + mult from the round's current_hand scratch fields.
+    -- [ASSUMED: G.GAME.current_round.current_hand.chips / .mult carry the
+    --  per-hand chips and mult; verify via reload_mod.py during 03-04 live seed.]
+    local hand_chips = 0
+    local hand_mult  = 0
+    if G.GAME and G.GAME.current_round and G.GAME.current_round.current_hand then
+      hand_chips = G.GAME.current_round.current_hand.chips or 0
+      hand_mult  = G.GAME.current_round.current_hand.mult  or 0
+    end
+
+    -- n_cards: number of cards in the played/highlighted hand.
+    -- [ASSUMED: G.play.cards holds the just-played cards on hand_played;
+    --  fallback to highlighted hand cards. verify at 03-04.]
+    local n_cards = 0
+    if G.play and G.play.cards then
+      n_cards = #G.play.cards
+    elseif G.hand and G.hand.cards then
+      for i = 1, #G.hand.cards do
+        if G.hand.cards[i].highlighted then
+          n_cards = n_cards + 1
+        end
+      end
+    end
+
+    obs.last_hand = {
+      hand_type = hand_type,
+      chips     = hand_chips,
+      mult      = hand_mult,
+      n_cards   = n_cards,
+    }
+  end
+
   obs.game_state = gs
   obs.phase      = get_phase()
   obs.event      = event_name

@@ -289,6 +289,27 @@ class GameStateObs(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# LastHandObs
+# ---------------------------------------------------------------------------
+
+class LastHandObs(BaseModel):
+    """The scored poker hand on a `hand_played` event (Panels 5 & 6).
+
+    Emitted by mod/state.lua only on `event == "hand_played"`; absent (None)
+    for every other event. Carries the scored poker hand name plus the per-hand
+    chips and mult so the dashboard's best-run hand-by-hand panel and the
+    hand-type-frequency panel render real values (03-RESEARCH Pitfall 4).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hand_type: str   # raw poker hand name (e.g. "Pair", "Flush"); not normalised
+    chips:     int   # per-hand chips applied
+    mult:      int   # per-hand mult applied
+    n_cards:   int   # number of scoring cards in the played hand
+
+
+# ---------------------------------------------------------------------------
 # FullObservation
 # ---------------------------------------------------------------------------
 
@@ -305,6 +326,7 @@ class FullObservation(BaseModel):
     phase:       str   # "playing" | "shop" | "blind_select" | "booster_pack"
     event:       str   # "draw" | "hand_played" | "discard" | "blind_start" | ...
     pack:        list[ShopItemObs] = []   # offered cards in open booster pack; [] outside pack phase
+    last_hand:   LastHandObs | None = None   # scored poker hand on hand_played; None otherwise
 
 
 # ---------------------------------------------------------------------------
