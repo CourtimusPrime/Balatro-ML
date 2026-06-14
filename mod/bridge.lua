@@ -269,6 +269,17 @@ function BML_Bridge._classify_state()
   if G.STATE == G.STATES.SHOP then return "shop_open" end
   if G.STATE == G.STATES.BLIND_SELECT then return "blind_start" end
   if G.STATE == G.STATES.SELECTING_HAND then return "draw" end
+  -- Booster-pack open: any *_PACK state is a resting decision state (Pitfall 6:
+  -- a Mega pack with picks remaining is NOT intermediate — the agent must act).
+  -- Nil-guarded: missing PACK constant returns nil (falsy), no error.
+  -- "pack_open" is in Python's ACTIONABLE_EVENTS so the drain loop stops here.
+  local PACK_STATES = {}
+  if G.STATES.TAROT_PACK    then PACK_STATES[G.STATES.TAROT_PACK]    = true end
+  if G.STATES.PLANET_PACK   then PACK_STATES[G.STATES.PLANET_PACK]   = true end
+  if G.STATES.SPECTRAL_PACK then PACK_STATES[G.STATES.SPECTRAL_PACK] = true end
+  if G.STATES.STANDARD_PACK then PACK_STATES[G.STATES.STANDARD_PACK] = true end
+  if G.STATES.BUFFOON_PACK  then PACK_STATES[G.STATES.BUFFOON_PACK]  = true end
+  if PACK_STATES[G.STATE] then return "pack_open" end
   return nil   -- intermediate/animating state — not ready to report yet
 end
 
@@ -334,9 +345,11 @@ end
 -- ASSUMED G.FUNCS names (not yet live-verified — run probe_lua_funcs.py):
 --   sell_card     (sell_joker branch)    — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
 --   use_card      (use_consumable branch) — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   use_card      (select_pack_card branch, reused for pack picks) — ASSUMED, verify via probe
 --   reroll_shop   (reroll branch)        — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
 --   select_blind  (select_blind branch)  — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
 --   skip_blind    (skip_blind branch)    — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
+--   skip_booster  (skip_pack branch)     — ASSUMED, verify via probe_lua_funcs.py (02-04 checkpoint)
 function BML_Bridge.dispatch(action)
   local name = action.action
   if not name then return end
@@ -447,6 +460,29 @@ function BML_Bridge.dispatch(action)
       -- the tag_container element exists, then calls G.FUNCS.skip_blind.
       _pending_blind = "skip_blind"
       BML_Bridge._try_blind()
+
+    elseif name == "select_pack_card" then
+      -- Pick a card offered by an open booster pack.
+      -- Mirrors the use_consumable branch: highlight the card, then use_card.
+      -- Do NOT track picks locally (Pitfall 5) — after each select the game
+      -- decrements pack_choices and the next snapshot recomputes the mask.
+      local i = action.index + 1
+      local card = G.pack_cards and G.pack_cards.cards and G.pack_cards.cards[i]
+      if card then
+        card.highlighted = true
+        -- ASSUMED: G.FUNCS.use_card applies the pack card (levels a hand for
+        -- Planet, adds to deck for Standard, to consumable slot for Tarot/Spectral,
+        -- to joker slot for Buffoon). VERIFY via probe_lua_funcs.py (02-04 checkpoint).
+        G.FUNCS.use_card({ config = { ref_table = card } })
+      end
+
+    elseif name == "skip_pack" then
+      -- Close the pack with no pick (always legal — success criterion 6).
+      -- When pack_choices==0 the game auto-returns to SHOP; _advance_and_respond
+      -- then emits shop_open exactly as it does after cash-out (no close_pack needed).
+      -- ASSUMED: G.FUNCS.skip_booster closes the pack. VERIFY via probe_lua_funcs.py
+      -- (02-04 checkpoint).
+      G.FUNCS.skip_booster({})
 
     end
   end)
