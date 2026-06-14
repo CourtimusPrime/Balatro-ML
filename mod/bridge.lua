@@ -27,6 +27,7 @@ local _connected = false
 local HOST       = "127.0.0.1"
 local PORT       = 12345
 local _first_blind_start_done = false   -- tracks whether we've emitted debug_hand_names
+local _pending_blind = nil              -- deferred blind action ("select_blind"/"skip_blind") awaiting a ready UI
 
 -- ---------------------------------------------------------------------------
 -- BML_Bridge.connect
@@ -117,6 +118,10 @@ function BML_Bridge.poll(dt)
       break
     end
   end
+
+  -- Retry any deferred blind-select action now that another frame has elapsed
+  -- and the lazily-built blind-select UI may have become ready.
+  BML_Bridge._try_blind()
 end
 
 -- ---------------------------------------------------------------------------
@@ -145,9 +150,62 @@ end
 -- G.blind_select_opts, or nil when the blind-select screen isn't showing.
 -- select_blind / skip_blind locate their button elements within this box.
 function BML_Bridge._current_blind_opt()
-  if not G.blind_select_opts then return nil end
-  local key = string.lower(tostring((G.GAME and G.GAME.blind_on_deck) or "Small"))
+  -- Require blind_on_deck to be set: it is assigned while the blind-select UI is
+  -- built (UI_definitions.lua:1620), and G.FUNCS.select_blind indexes
+  -- round_resets.blind_states[blind_on_deck] — a nil key would error. Returning
+  -- nil until it is set lets _try_blind() keep waiting instead of acting early.
+  if not (G.blind_select_opts and G.GAME and G.GAME.blind_on_deck) then return nil end
+  local key = string.lower(tostring(G.GAME.blind_on_deck))
   return G.blind_select_opts[key]
+end
+
+-- ---------------------------------------------------------------------------
+-- BML_Bridge._try_blind
+-- ---------------------------------------------------------------------------
+-- Executes a deferred blind-select action once the UI is actually ready.
+--
+-- Why deferred: the blind-select option boxes (G.blind_select_opts.small/big/
+-- boss) are built with UIBox_dyn_container (UI_definitions.lua:1623-1625), whose
+-- children — the 'select_blind_button' and 'tag_container' elements — are
+-- realised lazily, several frames after blind_start fires (with ~77 events still
+-- queued). An action that arrives immediately therefore can't find its button.
+-- So dispatch() stashes the action in _pending_blind and poll() calls this every
+-- frame until get_UIE_by_ID succeeds, then fires it. Python's 5s step() timeout
+-- bounds the wait; if the UI never becomes ready the episode truncates.
+function BML_Bridge._try_blind()
+  if not _pending_blind then return end
+
+  -- Bail (without clearing) if we're not on a ready blind-select screen — e.g.
+  -- mid-teardown or already advanced. start_run clears _pending_blind on reset.
+  if not (G.STATE == G.STATES.BLIND_SELECT and G.blind_select
+          and G.GAME and G.GAME.blind_on_deck) then
+    return
+  end
+
+  local opt = BML_Bridge._current_blind_opt()
+  if not opt then return end
+
+  if _pending_blind == "select_blind" then
+    -- select_blind(e) reads e.config.ref_table (the blind) and
+    -- e.UIBox:get_UIE_by_ID('tag_container'); the button element supplies both.
+    local btn = opt:get_UIE_by_ID("select_blind_button")
+    if not btn then return end          -- dyn container not realised yet; retry next frame
+    local ok, err = pcall(function() G.FUNCS.select_blind(btn) end)
+    if not ok then print("[BML] select_blind error: " .. tostring(err)) end
+    _pending_blind = nil
+
+  elseif _pending_blind == "skip_blind" then
+    -- skip_blind(e) dereferences e.UIBox:get_UIE_by_ID('tag_container'); passing
+    -- the tag_container element itself satisfies that (its .UIBox is the opt box).
+    local tag = opt:get_UIE_by_ID("tag_container")
+    if not tag then return end          -- no skip tag realised yet; retry next frame
+    local ok, err = pcall(function() G.FUNCS.skip_blind(tag) end)
+    if not ok then print("[BML] skip_blind error: " .. tostring(err)) end
+    _pending_blind = nil
+
+  else
+    _pending_blind = nil                -- unknown pending value; drop it
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -194,6 +252,9 @@ function BML_Bridge.dispatch(action)
   local ok, err = pcall(function()  -- luacheck: ignore err
 
     if name == "start_run" then
+      -- New episode: drop any blind action still waiting from a prior run so it
+      -- can't fire into the fresh run after teardown.
+      _pending_blind = nil
       -- Multi-game reset: if a run is already active (not at the main menu),
       -- tear it down first so start_run can set up a clean run.
       if G.STATE ~= G.STATES.MENU then
@@ -260,26 +321,17 @@ function BML_Bridge.dispatch(action)
       G.FUNCS.toggle_shop({})
 
     elseif name == "select_blind" then
-      -- G.FUNCS.select_blind(e) reads e.config.ref_table (the blind choice
-      -- config), so it needs the real 'select_blind_button' UI element from the
-      -- current blind's option box — not an empty table. Guarded so it no-ops
-      -- (rather than erroring) when the blind-select UI isn't present.
-      local opt = BML_Bridge._current_blind_opt()
-      local btn = opt and opt:get_UIE_by_ID("select_blind_button")
-      if btn then
-        G.FUNCS.select_blind(btn)
-      end
+      -- Defer: the select button is realised lazily a few frames after
+      -- blind_start (see BML_Bridge._try_blind). Stash it; poll() retries each
+      -- frame until the button is findable, then calls G.FUNCS.select_blind.
+      _pending_blind = "select_blind"
+      BML_Bridge._try_blind()
 
     elseif name == "skip_blind" then
-      -- G.FUNCS.skip_blind(e) dereferences e.UIBox:get_UIE_by_ID('tag_container'),
-      -- so it needs the real 'tag_container' element from the current blind's
-      -- option box. Passing {} crashes on e.UIBox (button_callbacks.lua:2754).
-      -- Guarded so it no-ops when the blind-select UI isn't present.
-      local opt = BML_Bridge._current_blind_opt()
-      local tag_container = opt and opt:get_UIE_by_ID("tag_container")
-      if tag_container then
-        G.FUNCS.skip_blind(tag_container)
-      end
+      -- Defer: same lazy-realisation reason as select_blind. poll() retries until
+      -- the tag_container element exists, then calls G.FUNCS.skip_blind.
+      _pending_blind = "skip_blind"
+      BML_Bridge._try_blind()
 
     end
   end)
