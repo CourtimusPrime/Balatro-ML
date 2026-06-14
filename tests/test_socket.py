@@ -25,6 +25,20 @@ from src.env.socket_bridge import AGENT_PORT, SocketBridge
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _free_port() -> int:
+    """Return an unused ephemeral TCP port on localhost.
+
+    Tests bind this instead of AGENT_PORT (12345) so a live Balatro instance —
+    whose mod auto-dials 12345 every frame — can't connect to the test server
+    and make connection-state assertions non-deterministic.
+    """
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 async def _connect(port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Open a connection to the bridge (retries for up to 2 s)."""
     deadline = time.monotonic() + 2.0
@@ -53,8 +67,8 @@ async def _recv_line(reader: asyncio.StreamReader, timeout: float = 2.0) -> dict
 
 @pytest.fixture()
 def bridge():
-    """Start a SocketBridge on the default agent port and stop it after the test."""
-    b = SocketBridge(port=AGENT_PORT)
+    """Start a SocketBridge on an ephemeral port and stop it after the test."""
+    b = SocketBridge(port=_free_port())
     b.start()
     yield b
     b.stop()
@@ -65,7 +79,7 @@ def bridge():
 # ---------------------------------------------------------------------------
 
 def test_bridge_starts_and_stops():
-    b = SocketBridge(port=AGENT_PORT)
+    b = SocketBridge(port=_free_port())
     b.start()
     time.sleep(0.1)
     b.stop()
@@ -224,7 +238,7 @@ def test_is_connected_reflects_state(bridge: SocketBridge):
 
 def test_repr(bridge: SocketBridge):
     r = repr(bridge)
-    assert str(AGENT_PORT) in r
+    assert str(bridge.port) in r
 
 
 def test_stop_leaves_no_pending_tasks():
@@ -240,12 +254,7 @@ def test_stop_leaves_no_pending_tasks():
     instance (which auto-dials 12345) can't connect to our server and make the
     assertion non-deterministic.
     """
-    probe = socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    free_port = probe.getsockname()[1]
-    probe.close()
-
-    b = SocketBridge(port=free_port)
+    b = SocketBridge(port=_free_port())
     b.start()
 
     # The warning is emitted from Task.__del__ via the asyncio logger's exception
