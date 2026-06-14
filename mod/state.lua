@@ -104,6 +104,16 @@ local function get_phase()
   elseif G.STATE == G.STATES.BLIND_SELECT then
     return "blind_select"
   end
+  -- Booster-pack phase: any of the five *_PACK states is a resting decision.
+  -- Nil-guarded: if a PACK constant doesn't exist yet the table miss returns nil
+  -- (falsy), so no error — just falls through to the "playing" default.
+  local PACK_STATES = {}
+  if G.STATES.TAROT_PACK    then PACK_STATES[G.STATES.TAROT_PACK]    = true end
+  if G.STATES.PLANET_PACK   then PACK_STATES[G.STATES.PLANET_PACK]   = true end
+  if G.STATES.SPECTRAL_PACK then PACK_STATES[G.STATES.SPECTRAL_PACK] = true end
+  if G.STATES.STANDARD_PACK then PACK_STATES[G.STATES.STANDARD_PACK] = true end
+  if G.STATES.BUFFOON_PACK  then PACK_STATES[G.STATES.BUFFOON_PACK]  = true end
+  if PACK_STATES[G.STATE] then return "booster_pack" end
   return "playing"
 end
 
@@ -212,6 +222,27 @@ function BML_State.snapshot(event_name)
   obs.shop.reroll_cost =
     (G.GAME and G.GAME.current_round and G.GAME.current_round.reroll_cost) or 0
 
+  -- Pack cards (offered cards when a booster pack is open).
+  -- Always emitted (empty array when no pack open) so Python's defaulted
+  -- obs.pack field always receives an array regardless of phase.
+  -- [CITED: Steamodded G wiki — "G.pack_cards: Area for cards in a booster";
+  --  besteon/balatrobot utils.lua extract_area(G.pack_cards) when not REMOVED]
+  obs.pack = {}
+  if G.pack_cards and G.pack_cards.cards and not G.pack_cards.REMOVED then
+    for i = 1, #G.pack_cards.cards do
+      local c = G.pack_cards.cards[i]
+      local center_key = (c.config and (c.config.center_key or c.config.card_key)) or ""
+      obs.pack[#obs.pack + 1] = {
+        type        = (c.ability and c.ability.set) or "Base",
+        id          = center_key,
+        cost        = c.cost or 0,
+        edition     = (c.edition and c.edition.type) or "",
+        enhancement = (c.ability and c.ability.effect) or "",
+        seal        = c.seal or "",
+      }
+    end
+  end
+
   -- Game state scalars
   local gs = {}
   gs.ante               = (G.GAME and G.GAME.round_resets and G.GAME.round_resets.ante) or 0
@@ -228,6 +259,25 @@ function BML_State.snapshot(event_name)
     (G.consumeables and G.consumeables.config and G.consumeables.config.card_limit) or 0
   gs.reroll_cost        =
     (G.GAME and G.GAME.current_round and G.GAME.current_round.reroll_cost) or 0
+
+  -- Pack scalars (0 / "" when no pack open; always emitted so Python defaults match).
+  -- [ASSUMED: G.GAME.pack_choices is the remaining-pick counter decremented per pick.
+  --  Verify via probe_lua_funcs.py (02-04 checkpoint). Could also be derived from
+  --  G.GAME.pack_size if pack_choices is absent.]
+  gs.pack_picks_remaining = (G.GAME and G.GAME.pack_choices) or 0
+
+  -- Derive pack_type string from G.STATE so Python can normalise via PACK_TYPE_MAP.
+  -- [CITED: G.STATES.TAROT_PACK / PLANET_PACK / SPECTRAL_PACK exist (can_use checks);
+  --  STANDARD_PACK / BUFFOON_PACK by the same pattern — ASSUMED: verify via probe.]
+  local PACK_TYPE_BY_STATE = {}
+  if G.STATES then
+    if G.STATES.TAROT_PACK    then PACK_TYPE_BY_STATE[G.STATES.TAROT_PACK]    = "Arcana"    end
+    if G.STATES.PLANET_PACK   then PACK_TYPE_BY_STATE[G.STATES.PLANET_PACK]   = "Celestial" end
+    if G.STATES.STANDARD_PACK then PACK_TYPE_BY_STATE[G.STATES.STANDARD_PACK] = "Standard"  end
+    if G.STATES.BUFFOON_PACK  then PACK_TYPE_BY_STATE[G.STATES.BUFFOON_PACK]  = "Buffoon"   end
+    if G.STATES.SPECTRAL_PACK then PACK_TYPE_BY_STATE[G.STATES.SPECTRAL_PACK] = "Spectral"  end
+  end
+  gs.pack_type = (G.STATE and PACK_TYPE_BY_STATE[G.STATE]) or ""
 
   -- hand_levels: dict keyed by hand name string (e.g. "High Card")
   gs.hand_levels = {}
