@@ -129,3 +129,84 @@ def booster_raw_obs():
     env and observation tests (Wave 0 scaffold; turned GREEN by Slice B).
     """
     return json.loads((FIXTURES_DIR / "booster_pack_state.json").read_text())
+
+
+# ---------------------------------------------------------------------------
+# seeded_db fixture (dashboard data layer — DASH-01)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def seeded_db(tmp_path):
+    """Build a small, deterministic temp runs.db and yield its path.
+
+    Contents (offline, no live game):
+      - 3 runs across 2 decks / 2 stakes; all finalized with distinct
+        final_scores (so get_best_run has a unique winner).
+      - ante_events for each run.
+      - hand_events: a full hand-by-hand sequence for the top run (the
+        best run), plus some hands with NULL hand_type to prove the
+        get_hand_type_counts NULL-exclusion.
+      - joker_events: overlapping joker sets so get_joker_cooccurrence
+        finds at least one j1<j2 pair among high-scoring runs.
+
+    Downstream plans (03-02 recorder, 03-03 app, 03-04 seed) reuse this
+    fixture for their offline tests.
+    """
+    from src.dashboard import db
+
+    path = str(tmp_path / "runs.db")
+    db.init_db(path)
+    conn = db.connect(path)
+
+    # Run A — best run (deck b_red, stake 1), highest final_score.
+    a = db.insert_run(conn, "b_red", 1, "2026-01-01T10:00:00")
+    db.finalize_run(conn, a, final_score=90000, won=1, ante_reached=8,
+                    num_jokers=3, ended_at="2026-01-01T10:25:00")
+    db.insert_ante(conn, a, ante=1, blind_chips=300, chips_scored=450,
+                   created_at="2026-01-01T10:02:00")
+    db.insert_ante(conn, a, ante=2, blind_chips=800, chips_scored=1200,
+                   created_at="2026-01-01T10:05:00")
+    db.insert_hand(conn, a, ante=1, hand_index=0, hand_type="Pair",
+                   chips=40, mult=2, n_cards=2, score=80,
+                   created_at="2026-01-01T10:02:10")
+    db.insert_hand(conn, a, ante=1, hand_index=1, hand_type="Flush",
+                   chips=140, mult=4, n_cards=5, score=560,
+                   created_at="2026-01-01T10:02:20")
+    db.insert_hand(conn, a, ante=2, hand_index=2, hand_type="Full House",
+                   chips=160, mult=4, n_cards=5, score=640,
+                   created_at="2026-01-01T10:05:10")
+    # A hand with NULL hand_type (e.g. a discard / unscored event).
+    db.insert_hand(conn, a, ante=2, hand_index=3, hand_type=None,
+                   chips=None, mult=None, n_cards=None, score=0,
+                   created_at="2026-01-01T10:05:20")
+    db.insert_jokers(conn, a, [10, 20, 30])
+
+    # Run B — mid score (deck b_blue, stake 2).
+    b = db.insert_run(conn, "b_blue", 2, "2026-01-01T11:00:00")
+    db.finalize_run(conn, b, final_score=45000, won=0, ante_reached=5,
+                    num_jokers=2, ended_at="2026-01-01T11:20:00")
+    db.insert_ante(conn, b, ante=1, blind_chips=300, chips_scored=300,
+                   created_at="2026-01-01T11:02:00")
+    db.insert_hand(conn, b, ante=1, hand_index=0, hand_type="Pair",
+                   chips=40, mult=2, n_cards=2, score=80,
+                   created_at="2026-01-01T11:02:10")
+    db.insert_hand(conn, b, ante=1, hand_index=1, hand_type="High Card",
+                   chips=5, mult=1, n_cards=1, score=5,
+                   created_at="2026-01-01T11:02:20")
+    db.insert_jokers(conn, b, [10, 20])  # shares 10,20 with run A
+
+    # Run C — low score (deck b_red, stake 1, same deck/stake as A).
+    c = db.insert_run(conn, "b_red", 1, "2026-01-01T12:00:00")
+    db.finalize_run(conn, c, final_score=10000, won=0, ante_reached=3,
+                    num_jokers=1, ended_at="2026-01-01T12:10:00")
+    db.insert_ante(conn, c, ante=1, blind_chips=300, chips_scored=150,
+                   created_at="2026-01-01T12:02:00")
+    db.insert_hand(conn, c, ante=1, hand_index=0, hand_type="High Card",
+                   chips=5, mult=1, n_cards=1, score=5,
+                   created_at="2026-01-01T12:02:10")
+    db.insert_jokers(conn, c, [40])
+
+    conn.commit()
+    conn.close()
+    yield path
