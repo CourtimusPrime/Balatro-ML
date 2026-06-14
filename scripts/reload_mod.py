@@ -22,8 +22,11 @@ from __future__ import annotations
 import argparse
 import queue
 import sys
+from pathlib import Path
 
 from loguru import logger
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.env.socket_bridge import AGENT_PORT, SocketBridge
 
