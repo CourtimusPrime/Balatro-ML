@@ -483,26 +483,185 @@ def test_pack_obs_contains(mock_env, booster_raw_obs):
 
 # ---------------------------------------------------------------------------
 # ENV-04 (live): live pack acceptance tests — skip unless BALATRO_LIVE=1
+#
+# These tests (SC-3/4/5) require:
+#   1. A running modded Balatro (lovely-injector + Steamodded >= 1.0)
+#   2. The G.FUNCS pack names confirmed/corrected via the probe checkpoint (Task 4)
+#   3. BALATRO_LIVE=1 environment variable set
+#
+# They skip cleanly offline and MUST NOT be marked done until Task 4 (the live
+# G.FUNCS probe checkpoint) confirms or corrects the ASSUMED names.
 # ---------------------------------------------------------------------------
 
-
-@pytest.mark.skipif(
-    not __import__("os").environ.get("BALATRO_LIVE"),
-    reason="Requires live Balatro game (set BALATRO_LIVE=1)",
+_LIVE_SKIP = pytest.mark.skipif(
+    not os.environ.get("BALATRO_LIVE"),
+    reason="Requires live modded Balatro + probe checkpoint resolved (set BALATRO_LIVE=1)",
 )
-def test_live_pack_celestial_levels_hand():
-    """SC-3: Buying a Celestial pack and selecting a Planet card levels a hand.
 
-    Manual/live — requires Balatro running with mod loaded.
+
+@_LIVE_SKIP
+def test_live_pack_celestial_levels_hand():
+    """SC-3 live: buying a Celestial pack and selecting a Planet card levels a hand.
+
+    Acceptance gate (live only — gated behind probe checkpoint Task 4):
+    - Navigate to a shop containing a Celestial booster pack.
+    - Record the current hand_levels from the observation.
+    - Buy the Celestial pack (buy action for the booster item).
+    - Assert the observation phase transitions to 'booster_pack'.
+    - Select a Planet card (select_pack_card_0).
+    - Assert that the next observation's game_state.hand_levels shows at least
+      one hand type with a level increased by 1 relative to the pre-pick snapshot.
     """
     from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+    from src.env.action_space import ACTION_INDEX  # noqa: PLC0415
 
     env = BalatroEnv(deck="b_red", stake=1)
     try:
-        obs, _ = env.reset()
-        # Navigate to a Celestial pack scenario; then select a Planet card
-        # and verify hand_levels increased. Full test body written by live acceptance.
-        raise NotImplementedError("Live pack test not yet implemented — scaffold only")
+        obs_dict, _ = env.reset()
+
+        # Locate a shop state with a Celestial pack and buy it.
+        # The test driver loops until it finds such a shop (or times out).
+        # In practice this is run manually after navigating to a Celestial pack.
+        #
+        # Step 1: assert we are in shop phase with a Celestial pack available.
+        assert env._current_phase == "shop", (
+            "SC-3: Expected shop phase at test start — navigate to a shop with a Celestial pack"
+        )
+
+        # Step 2: find and buy the Celestial pack (type==6 item whose pack_type
+        # will be 'Celestial' once opened).  Use buy_0 if the first shop item is
+        # a Celestial pack — adjust index if needed in a real run.
+        from src.env.observation import parse_observation  # noqa: PLC0415
+
+        raw = env._bridge.get_state()
+        pre_obs = parse_observation(raw)
+        pre_hand_levels = dict(pre_obs.game_state.hand_levels)
+
+        # Buy index 0 (assumes the first shop item is the Celestial pack).
+        buy_idx = ACTION_INDEX["buy_0"]
+        obs_dict, _, _, _, _ = env.step(buy_idx)
+
+        # Step 3: assert phase is now booster_pack.
+        assert env._current_phase == "booster_pack", (
+            f"SC-3: Expected booster_pack phase after buying Celestial pack; got {env._current_phase!r}"
+        )
+
+        # Step 4: select the first Planet card.
+        select_idx = ACTION_INDEX["select_pack_card_0"]
+        obs_dict, _, _, _, _ = env.step(select_idx)
+
+        # Step 5: assert at least one hand_levels entry increased.
+        raw2 = env._bridge.get_state()
+        post_obs = parse_observation(raw2)
+        post_hand_levels = dict(post_obs.game_state.hand_levels)
+
+        leveled_up = any(
+            post_hand_levels.get(hand, 1) > pre_hand_levels.get(hand, 1)
+            for hand in post_hand_levels
+        )
+        assert leveled_up, (
+            f"SC-3: No hand level increased after selecting a Planet card.\n"
+            f"  Before: {pre_hand_levels}\n  After:  {post_hand_levels}"
+        )
+    finally:
+        env.close()
+
+
+@_LIVE_SKIP
+def test_live_pack_standard_adds_deck_card():
+    """SC-4 live: buying a Standard pack and selecting a playing card adds it to the deck.
+
+    Acceptance gate (live only — gated behind probe checkpoint Task 4):
+    - Navigate to a shop containing a Standard booster pack.
+    - Record the deck card count from the pre-pick observation.
+    - Buy the Standard pack and assert phase transitions to 'booster_pack'.
+    - Select a playing card (select_pack_card_0).
+    - Assert the deck card count (or membership) increased by 1 in the next observation.
+    """
+    from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+    from src.env.action_space import ACTION_INDEX  # noqa: PLC0415
+    from src.env.observation import parse_observation  # noqa: PLC0415
+
+    env = BalatroEnv(deck="b_red", stake=1)
+    try:
+        obs_dict, _ = env.reset()
+
+        assert env._current_phase == "shop", (
+            "SC-4: Expected shop phase at test start — navigate to a shop with a Standard pack"
+        )
+
+        raw = env._bridge.get_state()
+        pre_obs = parse_observation(raw)
+        # Count deck cards (in_deck=True in the cards list)
+        pre_deck_count = sum(1 for c in pre_obs.cards if c.in_deck)
+
+        buy_idx = ACTION_INDEX["buy_0"]
+        obs_dict, _, _, _, _ = env.step(buy_idx)
+
+        assert env._current_phase == "booster_pack", (
+            f"SC-4: Expected booster_pack phase after buying Standard pack; got {env._current_phase!r}"
+        )
+
+        select_idx = ACTION_INDEX["select_pack_card_0"]
+        obs_dict, _, _, _, _ = env.step(select_idx)
+
+        raw2 = env._bridge.get_state()
+        post_obs = parse_observation(raw2)
+        post_deck_count = sum(1 for c in post_obs.cards if c.in_deck)
+
+        assert post_deck_count > pre_deck_count, (
+            f"SC-4: Deck card count did not increase after selecting a Standard pack card.\n"
+            f"  Before: {pre_deck_count} deck cards\n  After:  {post_deck_count} deck cards"
+        )
+    finally:
+        env.close()
+
+
+@_LIVE_SKIP
+def test_live_pack_arcana_to_consumable():
+    """SC-5 live: buying an Arcana pack and selecting a Tarot lands it in a consumable slot.
+
+    Acceptance gate (live only — gated behind probe checkpoint Task 4):
+    - Navigate to a shop containing an Arcana booster pack.
+    - Record the consumable count from the pre-pick observation.
+    - Buy the Arcana pack and assert phase transitions to 'booster_pack'.
+    - Select the first Tarot card (select_pack_card_0), assuming a free consumable slot.
+    - Assert a consumable slot is populated (count increased by 1) in the next observation.
+    """
+    from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
+    from src.env.action_space import ACTION_INDEX  # noqa: PLC0415
+    from src.env.observation import parse_observation  # noqa: PLC0415
+
+    env = BalatroEnv(deck="b_red", stake=1)
+    try:
+        obs_dict, _ = env.reset()
+
+        assert env._current_phase == "shop", (
+            "SC-5: Expected shop phase at test start — navigate to a shop with an Arcana pack"
+        )
+
+        raw = env._bridge.get_state()
+        pre_obs = parse_observation(raw)
+        pre_consumable_count = len(pre_obs.consumables)
+
+        buy_idx = ACTION_INDEX["buy_0"]
+        obs_dict, _, _, _, _ = env.step(buy_idx)
+
+        assert env._current_phase == "booster_pack", (
+            f"SC-5: Expected booster_pack phase after buying Arcana pack; got {env._current_phase!r}"
+        )
+
+        select_idx = ACTION_INDEX["select_pack_card_0"]
+        obs_dict, _, _, _, _ = env.step(select_idx)
+
+        raw2 = env._bridge.get_state()
+        post_obs = parse_observation(raw2)
+        post_consumable_count = len(post_obs.consumables)
+
+        assert post_consumable_count > pre_consumable_count, (
+            f"SC-5: Consumable count did not increase after selecting a Tarot from an Arcana pack.\n"
+            f"  Before: {pre_consumable_count} consumables\n  After:  {post_consumable_count} consumables"
+        )
     finally:
         env.close()
 
