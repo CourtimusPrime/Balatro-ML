@@ -28,6 +28,8 @@ local HOST       = "127.0.0.1"
 local PORT       = 12345
 local _first_blind_start_done = false   -- tracks whether we've emitted debug_hand_names
 local _pending_blind = nil              -- deferred blind action ("select_blind"/"skip_blind") awaiting a ready UI
+local _awaiting_response = false         -- true after an action is dispatched, until its one snapshot is emitted
+local _last_acted_on_deck = nil          -- blind_on_deck we last select/skipped; suppresses re-acting during teardown
 
 -- ---------------------------------------------------------------------------
 -- BML_Bridge.connect
@@ -122,6 +124,10 @@ function BML_Bridge.poll(dt)
   -- Retry any deferred blind-select action now that another frame has elapsed
   -- and the lazily-built blind-select UI may have become ready.
   BML_Bridge._try_blind()
+
+  -- Emit the single snapshot owed for the in-flight action once the game has
+  -- settled into a resting state (auto-advancing non-decision screens first).
+  BML_Bridge._advance_and_respond()
 end
 
 -- ---------------------------------------------------------------------------
@@ -160,6 +166,24 @@ function BML_Bridge._current_blind_opt()
 end
 
 -- ---------------------------------------------------------------------------
+-- BML_Bridge._blind_ready
+-- ---------------------------------------------------------------------------
+-- True when the blind-select screen is fully interactive: we're in BLIND_SELECT,
+-- G.blind_select exists, blind_on_deck is set, the option box is found, and its
+-- select button has been realised (the buttons build lazily). Used to decide when
+-- to emit blind_start (a new decision is possible) and is exactly the condition
+-- under which _try_blind can land an action — so the two never disagree.
+function BML_Bridge._blind_ready()
+  if not (G.STATE == G.STATES.BLIND_SELECT and G.blind_select
+          and G.GAME and G.GAME.blind_on_deck) then
+    return false
+  end
+  local opt = BML_Bridge._current_blind_opt()
+  if not opt then return false end
+  return opt:get_UIE_by_ID("select_blind_button") ~= nil
+end
+
+-- ---------------------------------------------------------------------------
 -- BML_Bridge._try_blind
 -- ---------------------------------------------------------------------------
 -- Executes a deferred blind-select action once the UI is actually ready.
@@ -185,6 +209,11 @@ function BML_Bridge._try_blind()
   local opt = BML_Bridge._current_blind_opt()
   if not opt then return end
 
+  -- Record which blind we act on BEFORE firing (skip_blind mutates blind_on_deck
+  -- synchronously). _last_acted_on_deck stops _advance_and_respond from re-emitting
+  -- blind_start for this same blind during its deferred teardown.
+  local acted = tostring(G.GAME.blind_on_deck)
+
   if _pending_blind == "select_blind" then
     -- select_blind(e) reads e.config.ref_table (the blind) and
     -- e.UIBox:get_UIE_by_ID('tag_container'); the button element supplies both.
@@ -192,20 +221,102 @@ function BML_Bridge._try_blind()
     if not btn then return end          -- dyn container not realised yet; retry next frame
     local ok, err = pcall(function() G.FUNCS.select_blind(btn) end)
     if not ok then print("[BML] select_blind error: " .. tostring(err)) end
+    _last_acted_on_deck = acted
     _pending_blind = nil
 
   elseif _pending_blind == "skip_blind" then
     -- skip_blind(e) dereferences e.UIBox:get_UIE_by_ID('tag_container'); passing
     -- the tag_container element itself satisfies that (its .UIBox is the opt box).
     local tag = opt:get_UIE_by_ID("tag_container")
-    if not tag then return end          -- no skip tag realised yet; retry next frame
+    if not tag then
+      -- Boss blinds have no skip tag/button — fall back to selecting it so the
+      -- agent never jams there. Small/Big always have a tag, so keep waiting for
+      -- it to realise rather than mis-selecting.
+      if acted == "Boss" then
+        local btn = opt:get_UIE_by_ID("select_blind_button")
+        if not btn then return end
+        local ok, err = pcall(function() G.FUNCS.select_blind(btn) end)
+        if not ok then print("[BML] boss select (skip fallback) error: " .. tostring(err)) end
+        _last_acted_on_deck = acted
+        _pending_blind = nil
+      end
+      return                            -- non-boss: tag not realised yet; retry
+    end
     local ok, err = pcall(function() G.FUNCS.skip_blind(tag) end)
     if not ok then print("[BML] skip_blind error: " .. tostring(err)) end
+    _last_acted_on_deck = acted
     _pending_blind = nil
 
   else
     _pending_blind = nil                -- unknown pending value; drop it
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- BML_Bridge._classify_state
+-- ---------------------------------------------------------------------------
+-- Maps the current resting game state to the single event name Python expects.
+-- Returns nil for intermediate/animating states (HAND_PLAYED, DRAW_TO_HAND,
+-- ROUND_EVAL, NEW_ROUND, *_PACK, ...) so _advance_and_respond keeps waiting.
+-- The returned names are all in the env's ACTIONABLE_EVENTS set, so no Python
+-- change is needed — every action yields exactly one of these.
+function BML_Bridge._classify_state()
+  if not (G and G.STATE and G.STATES) then return nil end
+  -- Terminal first: win sets G.GAME.won; loss drops to GAME_OVER.
+  if G.GAME and G.GAME.won then return "run_win" end
+  if G.STATE == G.STATES.GAME_OVER then return "run_lose" end
+  -- Interactive resting states the agent acts in.
+  if G.STATE == G.STATES.SHOP then return "shop_open" end
+  if G.STATE == G.STATES.BLIND_SELECT then return "blind_start" end
+  if G.STATE == G.STATES.SELECTING_HAND then return "draw" end
+  return nil   -- intermediate/animating state — not ready to report yet
+end
+
+-- ---------------------------------------------------------------------------
+-- BML_Bridge._advance_and_respond
+-- ---------------------------------------------------------------------------
+-- Strict 1-action -> 1-response: after dispatch() sets _awaiting_response, this
+-- (called every poll) waits for the game to finish transitioning (G.STATE_COMPLETE)
+-- then emits exactly one classified snapshot. It also auto-advances the cash-out
+-- screen (ROUND_EVAL), which has no agent action — otherwise the agent would
+-- stall there after beating a blind.
+function BML_Bridge._advance_and_respond()
+  if not _awaiting_response then return end
+  if _pending_blind then return end          -- blind action not fired yet; wait
+
+  -- Once we've left the blind-select screen, clear the "already acted" guard so
+  -- the next ante's blind selection is allowed again.
+  if G.STATE ~= G.STATES.BLIND_SELECT then _last_acted_on_deck = nil end
+
+  -- Blind-select: emit blind_start ONLY when the screen is ready for a decision
+  -- (buttons realised) AND it's a blind we haven't already acted on. Without the
+  -- second check we'd re-emit during the deferred teardown after an action lands
+  -- (G.blind_select still present for a few frames), making Python fire a second
+  -- blind action into the half-built next screen and jam.
+  if G.STATE == G.STATES.BLIND_SELECT then
+    if BML_Bridge._blind_ready()
+       and tostring(G.GAME.blind_on_deck) ~= _last_acted_on_deck then
+      BML_Bridge.emit("blind_start")
+      _awaiting_response = false
+    end
+    return                                    -- not ready / already acted → wait
+  end
+
+  if not G.STATE_COMPLETE then return end     -- mid-transition/animation; wait
+
+  -- Auto-advance the post-blind cash-out screen to the shop. cash_out(e) does
+  -- e.config.button = nil, so it needs a table with a .config field.
+  if G.STATE == G.STATES.ROUND_EVAL then
+    if G.round_eval then
+      pcall(function() G.FUNCS.cash_out({ config = {} }) end)
+    end
+    return                                    -- wait for SHOP on a later poll
+  end
+
+  local ev = BML_Bridge._classify_state()
+  if not ev then return end                   -- intermediate state; keep waiting
+  BML_Bridge.emit(ev)
+  _awaiting_response = false
 end
 
 -- ---------------------------------------------------------------------------
@@ -255,6 +366,10 @@ function BML_Bridge.dispatch(action)
       -- New episode: drop any blind action still waiting from a prior run so it
       -- can't fire into the fresh run after teardown.
       _pending_blind = nil
+      _last_acted_on_deck = nil
+      -- Run animations at max speed so scoring/shop transitions settle quickly
+      -- (keeps each step() well inside its socket timeout, and speeds training).
+      if G.SETTINGS then G.SETTINGS.GAMESPEED = 4 end
       -- Multi-game reset: if a run is already active (not at the main menu),
       -- tear it down first so start_run can set up a clean run.
       if G.STATE ~= G.STATES.MENU then
@@ -339,6 +454,11 @@ function BML_Bridge.dispatch(action)
   if not ok then
     print("[BML] dispatch error for '" .. tostring(name) .. "': " .. tostring(err))
   end
+
+  -- Every dispatched game action owes Python exactly one snapshot. poll() ->
+  -- _advance_and_respond() emits it once the resulting state settles. (Blind
+  -- actions also set _pending_blind, which gates the response until they fire.)
+  _awaiting_response = true
 end
 
 -- ---------------------------------------------------------------------------
@@ -351,134 +471,17 @@ love.update = function(dt)
 end
 
 -- ---------------------------------------------------------------------------
--- Event hook: blind_start — G.start_run
+-- Emit model: poll-driven, one snapshot per action (NOT per-FUNCS hooks)
 -- ---------------------------------------------------------------------------
--- Emits when a new run begins (first blind of the run).
--- On first emit only, state.lua includes debug_hand_names to capture live
--- G.GAME.hands key strings during BRIDGE-05 verification.
-local _start_run = G.start_run
-G.start_run = function(self, args)
-  _start_run(self, args)
-  BML_Bridge.emit("blind_start")
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: hand_played — G.FUNCS.play_cards_from_highlighted
--- ---------------------------------------------------------------------------
--- Deferred via G.E_MANAGER (delay=0.1s) so scoring animations can settle
--- before we snapshot. Emits only when the event queue has < 3 pending items
--- (state-stability check from coder/balatrobot pattern).
-local _play_orig = G.FUNCS.play_cards_from_highlighted
-G.FUNCS.play_cards_from_highlighted = function(e)
-  _play_orig(e)
-  G.E_MANAGER:add_event(Event({
-    trigger  = "after",
-    delay    = 0.1,
-    blocking = false,
-    func     = function()
-      if #G.E_MANAGER.queues.base <= 3 then
-        BML_Bridge.emit("hand_played")
-      end
-      return true
-    end
-  }))
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: discard — G.FUNCS.discard_cards_from_highlighted
--- ---------------------------------------------------------------------------
--- Same deferred-emit pattern as hand_played to avoid mid-animation state.
-local _discard_orig = G.FUNCS.discard_cards_from_highlighted
-G.FUNCS.discard_cards_from_highlighted = function(e)
-  _discard_orig(e)
-  G.E_MANAGER:add_event(Event({
-    trigger  = "after",
-    delay    = 0.1,
-    blocking = false,
-    func     = function()
-      if #G.E_MANAGER.queues.base <= 3 then
-        BML_Bridge.emit("discard")
-      end
-      return true
-    end
-  }))
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: draw — G.FUNCS.draw_from_deck_to_hand
--- ---------------------------------------------------------------------------
--- draw_from_deck_to_hand draws the full hand in one call (after blind select
--- and after each play/discard refill). We wrap this STABLE global rather than
--- G.GAME.blind.drawn_to_hand, because G.GAME.blind is replaced when a blind is
--- selected — hooking the start-of-run instance would be discarded. Same
--- deferred-emit pattern as hand_played/discard so the snapshot is taken after
--- the draw animation settles.
-local _draw_orig = G.FUNCS.draw_from_deck_to_hand
-G.FUNCS.draw_from_deck_to_hand = function(e)
-  local result = _draw_orig(e)
-  G.E_MANAGER:add_event(Event({
-    trigger  = "after",
-    delay    = 0.1,
-    blocking = false,
-    func     = function()
-      if #G.E_MANAGER.queues.base <= 3 then
-        BML_Bridge.emit("draw")
-      end
-      return true
-    end
-  }))
-  return result
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: shop_open and shop_close — G.FUNCS.toggle_shop
--- ---------------------------------------------------------------------------
--- toggle_shop is called for both open and close; we discriminate using G.STATE.
-local _toggle_shop_orig = G.FUNCS.toggle_shop
-G.FUNCS.toggle_shop = function(e)
-  local was_in_shop = (G.STATE == G.STATES.SHOP)
-  _toggle_shop_orig(e)
-  if was_in_shop then
-    BML_Bridge.emit("shop_close")
-  else
-    BML_Bridge.emit("shop_open")
-  end
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: shop_buy — G.FUNCS.buy_from_shop
--- ---------------------------------------------------------------------------
-local _buy_orig = G.FUNCS.buy_from_shop
-G.FUNCS.buy_from_shop = function(e)
-  _buy_orig(e)
-  BML_Bridge.emit("shop_buy")
-end
-
--- ---------------------------------------------------------------------------
--- Event hook: run_win and run_lose — G.FUNCS.cash_out / game_over
--- ---------------------------------------------------------------------------
--- cash_out is called after the final blind is beaten; emit run_win if G.GAME.won.
--- game_over is called when the player loses; emit run_lose.
-
-if G.FUNCS.cash_out then
-  local _cash_out_orig = G.FUNCS.cash_out
-  G.FUNCS.cash_out = function(e)
-    _cash_out_orig(e)
-    if G.GAME and G.GAME.won then
-      BML_Bridge.emit("run_win")
-    end
-  end
-end
-
-if G.FUNCS.game_over then
-  local _game_over_orig = G.FUNCS.game_over
-  G.FUNCS.game_over = function(e)
-    _game_over_orig(e)
-    if not (G.GAME and G.GAME.won) then
-      BML_Bridge.emit("run_lose")
-    end
-  end
-end
+-- Earlier revisions wrapped individual G.FUNCS (play_cards_from_highlighted,
+-- discard_cards_from_highlighted, draw_from_deck_to_hand, toggle_shop,
+-- buy_from_shop, cash_out, game_over) and G.start_run to emit an event per game
+-- transition. That assumed one action -> one event, which is false: toggle_card
+-- / skip_blind / reroll / sell / use emit nothing, while a single commit_play can
+-- emit two (hand_played + a refill draw). Either way step() would time out or
+-- desync. The hooks are removed; _advance_and_respond() (called from poll) now
+-- emits exactly one classified snapshot once each action's resulting state
+-- settles (G.STATE_COMPLETE), auto-advancing the no-decision cash-out screen.
 
 -- ---------------------------------------------------------------------------
 -- Initial connection attempt

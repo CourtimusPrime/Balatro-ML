@@ -63,6 +63,11 @@ HAND_LEVEL_ORDER: list[str] = [
 
 MAX_STEPS: int = 1000
 
+# Max seconds to wait for the game's snapshot after an action. Must comfortably
+# exceed the slowest transition (commit_play scoring -> round eval -> shop),
+# even though the mod runs animations at max game speed. Exceeding it truncates.
+STEP_TIMEOUT: float = 15.0
+
 
 # ---------------------------------------------------------------------------
 # BalatroEnv
@@ -191,7 +196,7 @@ class BalatroEnv(gym.Env):
         # Drain until we receive an actionable event (Pitfall 1)
         while True:
             try:
-                raw = self._bridge.get_state(timeout=5.0)
+                raw = self._bridge.get_state(timeout=STEP_TIMEOUT)
             except queue.Empty:
                 logger.warning("Socket timeout in step() — truncating episode")
                 return self._current_obs, 0.0, False, True, {}
