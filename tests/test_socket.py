@@ -9,8 +9,11 @@ test the real asyncio server against real sockets.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+import logging
 import queue
+import socket
 import time
 
 import pytest
@@ -222,3 +225,57 @@ def test_is_connected_reflects_state(bridge: SocketBridge):
 def test_repr(bridge: SocketBridge):
     r = repr(bridge)
     assert str(AGENT_PORT) in r
+
+
+def test_stop_leaves_no_pending_tasks():
+    """Regression: stop() while a client is connected must not destroy the
+    in-flight _handle_client task mid-await ("Task was destroyed but it is
+    pending!").
+
+    Uses a raw blocking socket (not asyncio) so the connection stays genuinely
+    open across stop() — _handle_client must be parked on the reader at teardown
+    for the scenario to be exercised.
+
+    Binds an ephemeral free port rather than AGENT_PORT so a live Balatro
+    instance (which auto-dials 12345) can't connect to our server and make the
+    assertion non-deterministic.
+    """
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
+
+    b = SocketBridge(port=free_port)
+    b.start()
+
+    # The warning is emitted from Task.__del__ via the asyncio logger's exception
+    # handler, which pytest's caplog doesn't reliably capture — attach a handler
+    # to the "asyncio" logger directly.
+    messages: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    handler = _Capture()
+    asyncio_logger = logging.getLogger("asyncio")
+    asyncio_logger.addHandler(handler)
+    prev_level = asyncio_logger.level
+    asyncio_logger.setLevel(logging.DEBUG)
+
+    sock = socket.create_connection(("127.0.0.1", b.port), timeout=2.0)
+    try:
+        assert b.wait_for_connection(timeout=2.0)
+        b.stop()
+        # The warning fires from Task.__del__. The handler task stays reachable via
+        # the bridge's event loop, so drop the bridge ref and force collection to
+        # make __del__ run now (rather than at interpreter teardown).
+        del b
+        gc.collect()
+        assert not any(
+            "Task was destroyed but it is pending" in m for m in messages
+        ), f"asyncio reported a destroyed pending task: {messages}"
+    finally:
+        sock.close()
+        asyncio_logger.removeHandler(handler)
+        asyncio_logger.setLevel(prev_level)

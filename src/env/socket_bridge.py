@@ -72,7 +72,18 @@ class SocketBridge:
         self._loop.run_forever()
         # run_forever() returns after loop.stop() — clean up before the thread exits.
         self._loop.run_until_complete(self._shutdown_server())
+        # Cancel any in-flight tasks (e.g. _handle_client parked on the reader) and
+        # let them unwind, otherwise loop.close() destroys them mid-await and asyncio
+        # logs "Task was destroyed but it is pending!".
+        self._loop.run_until_complete(self._cancel_pending_tasks())
         self._loop.close()
+
+    async def _cancel_pending_tasks(self) -> None:
+        pending = [t for t in asyncio.all_tasks(self._loop) if t is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _start_server(self) -> None:
         self._server = await asyncio.start_server(
