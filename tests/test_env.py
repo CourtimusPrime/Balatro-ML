@@ -206,7 +206,7 @@ def test_reset_returns_valid_obs(mock_env, minimal_raw_obs):
     obs_dict, info = result
     assert isinstance(obs_dict, dict)
     assert isinstance(info, dict)
-    expected_keys = {"cards", "jokers", "consumables", "shop", "game_state"}
+    expected_keys = {"cards", "jokers", "consumables", "shop", "pack", "game_state"}
     assert set(obs_dict.keys()) == expected_keys
 
 

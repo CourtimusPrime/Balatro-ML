@@ -1,8 +1,8 @@
 """
 BalatroEnv: gymnasium.Env wrapping SocketBridge for MaskablePPO training.
 
-Observation space: spaces.Dict with five Box sub-spaces (cards/jokers/consumables/
-shop/game_state). Action space: spaces.Discrete(31) with action_masks() method.
+Observation space: spaces.Dict with six Box sub-spaces (cards/jokers/consumables/
+shop/pack/game_state). Action space: spaces.Discrete(37) with action_masks() method.
 Protocol: send one action dict → drain until next actionable event.
 
 Lifecycle: SocketBridge is started in __init__ and stopped in close().
@@ -40,6 +40,7 @@ ACTIONABLE_EVENTS: frozenset[str] = frozenset(
         "shop_open",
         "shop_buy",
         "shop_close",
+        "pack_open",
         "run_win",
         "run_lose",
     }
@@ -97,7 +98,7 @@ class BalatroEnv(gym.Env):
         self._bridge = SocketBridge(port=port)
         self._bridge.start()
 
-        # Observation space — five zero-padded Box sub-spaces
+        # Observation space — six zero-padded Box sub-spaces
         self.observation_space = spaces.Dict(
             {
                 "cards": spaces.Box(
@@ -112,8 +113,11 @@ class BalatroEnv(gym.Env):
                 "shop": spaces.Box(
                     low=0, high=149, shape=(8, 6), dtype=np.int32
                 ),
+                "pack": spaces.Box(
+                    low=-1, high=149, shape=(5, 6), dtype=np.int32
+                ),
                 "game_state": spaces.Box(
-                    low=-1e6, high=1e6, shape=(26,), dtype=np.float32
+                    low=-1e6, high=1e6, shape=(29,), dtype=np.float32
                 ),
             }
         )
@@ -221,7 +225,7 @@ class BalatroEnv(gym.Env):
         return self._current_obs, reward, terminated, False, {"event": raw["event"]}
 
     def action_masks(self) -> np.ndarray:
-        """Return boolean mask shape (31,) — True = legal action.
+        """Return boolean mask shape (37,) — True = legal action.
 
         Safe to call before reset(): _current_phase defaults to 'playing',
         _last_obs defaults to None → build_mask receives empty lists and 0 counts.
@@ -238,6 +242,10 @@ class BalatroEnv(gym.Env):
                 consumables=[],
                 money=0,
                 reroll_cost=0,
+                pack_cards=[],
+                pack_picks_remaining=0,
+                consumable_slots=0,
+                joker_slots=0,
             )
 
         gs = self._last_obs.game_state
@@ -251,6 +259,10 @@ class BalatroEnv(gym.Env):
             consumables=self._last_obs.consumables[:4],
             money=gs.money,
             reroll_cost=self._last_obs.shop.reroll_cost,
+            pack_cards=self._last_obs.pack[:5],
+            pack_picks_remaining=gs.pack_picks_remaining,
+            consumable_slots=gs.consumable_slots,
+            joker_slots=gs.joker_slots,
         )
 
     def close(self) -> None:
@@ -268,7 +280,8 @@ class BalatroEnv(gym.Env):
             "jokers": np.zeros((10, 8), dtype=np.float32),
             "consumables": np.zeros((4, 2), dtype=np.int32),
             "shop": np.zeros((8, 6), dtype=np.int32),
-            "game_state": np.zeros((26,), dtype=np.float32),
+            "pack": np.zeros((5, 6), dtype=np.int32),
+            "game_state": np.zeros((29,), dtype=np.float32),
         }
 
     def _obs_to_dict(self, obs: FullObservation) -> dict[str, np.ndarray]:
@@ -319,7 +332,19 @@ class BalatroEnv(gym.Env):
                 item.seal,
             ]
 
-        # game_state: (26,) float32
+        # pack: (5, 6) int32 — [type, id, cost, edition, enhancement, seal]
+        # low=-1 because Standard-pack playing cards resolve to id==-1 (Pitfall 3)
+        for i, item in enumerate(obs.pack[:5]):
+            result["pack"][i] = [
+                item.type,
+                item.id,
+                item.cost,
+                item.edition,
+                item.enhancement,
+                item.seal,
+            ]
+
+        # game_state: (29,) float32
         # [0]   ante
         # [1]   blind (0/1/2)
         # [2]   log(chips_needed + 1)
@@ -331,7 +356,9 @@ class BalatroEnv(gym.Env):
         # [8]   joker_slots
         # [9]   consumable_slots
         # [10-22] hand_levels for 13 types (HAND_LEVEL_ORDER)
-        # [23-25] phase one-hot [playing, shop, blind_select]
+        # [23-26] phase one-hot [playing, shop, blind_select, booster_pack]
+        # [27]  pack_picks_remaining
+        # [28]  pack_type (int from PACK_TYPE_MAP; -1 when no pack open)
         # NOTE: reroll_cost is NOT encoded here (Pitfall 6)
         gs = obs.game_state
         gv = result["game_state"]
@@ -347,9 +374,12 @@ class BalatroEnv(gym.Env):
         gv[9] = gs.consumable_slots
         for j, hand_name in enumerate(HAND_LEVEL_ORDER):
             gv[10 + j] = gs.hand_levels.get(hand_name, 1)
-        # phase one-hot
-        phase_idx = {"playing": 0, "shop": 1, "blind_select": 2}.get(obs.phase, 0)
+        # phase one-hot (4-way: playing/shop/blind_select/booster_pack)
+        phase_idx = {"playing": 0, "shop": 1, "blind_select": 2, "booster_pack": 3}.get(obs.phase, 0)
         gv[23 + phase_idx] = 1.0
+        # pack scalars (appended; slots 0-25 unchanged)
+        gv[27] = gs.pack_picks_remaining
+        gv[28] = gs.pack_type
 
         return result
 
