@@ -13,6 +13,7 @@ ENV-04 (integration test) — skip-marked; requires a live Balatro game (set BAL
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 from pathlib import Path
@@ -282,21 +283,62 @@ def test_maskable_ppo_constructs(mock_env):
 # ---------------------------------------------------------------------------
 
 
+# Expected observation keys and dtypes (from observation_space, Plan 03 / RESEARCH.md)
+_EXPECTED_OBS_DTYPES = {
+    "cards": np.int32,
+    "jokers": np.float32,
+    "consumables": np.int32,
+    "shop": np.int32,
+    "game_state": np.float32,
+}
+
+# Per-game step-limit guard: double MAX_STEPS (1000) so a stuck game fails fast
+# with a descriptive message instead of hanging the test run.
+_STEP_LIMIT = 2000
+
+_log = logging.getLogger(__name__)
+
+
 @BALATRO_LIVE
 def test_random_agent_10_games():
     """ENV-04: random agent completes 10 full games, zero illegal actions, done fires."""
     from src.env.gymnasium_env import BalatroEnv  # noqa: PLC0415
 
     env = BalatroEnv(deck="b_red", stake=1)
-    for game in range(10):
-        obs, info = env.reset()
-        terminated = truncated = False
-        while not (terminated or truncated):
-            masks = env.action_masks()
-            assert masks.any(), "All actions masked — env bug"
-            legal = np.where(masks)[0]
-            action = int(np.random.choice(legal))
-            obs, reward, terminated, truncated, info = env.step(action)
-            assert np.isfinite(reward), f"Non-finite reward at step: {reward}"
-        assert terminated or truncated
-    env.close()
+    try:
+        for game in range(10):
+            obs, info = env.reset()
+
+            # Validate observation structure and dtypes early to catch shape
+            # mismatches before stepping.
+            assert isinstance(obs, dict), f"reset() obs is not a dict: {type(obs)}"
+            assert set(obs.keys()) == set(_EXPECTED_OBS_DTYPES), (
+                f"obs keys {set(obs.keys())} != expected {set(_EXPECTED_OBS_DTYPES)}"
+            )
+            for key, expected_dtype in _EXPECTED_OBS_DTYPES.items():
+                assert obs[key].dtype == expected_dtype, (
+                    f"obs['{key}'] dtype {obs[key].dtype} != expected {expected_dtype}"
+                )
+            assert env.observation_space.contains(obs), (
+                f"reset() obs not contained in observation_space (game {game})"
+            )
+
+            terminated = truncated = False
+            steps = 0
+            while not (terminated or truncated):
+                masks = env.action_masks()
+                assert masks.any(), "All actions masked — env bug"
+                legal = np.where(masks)[0]
+                action = int(np.random.choice(legal))
+                obs, reward, terminated, truncated, info = env.step(action)
+                assert np.isfinite(reward), f"Non-finite reward at step: {reward}"
+                steps += 1
+                assert steps < _STEP_LIMIT, (
+                    f"Game {game} exceeded step limit ({_STEP_LIMIT}) without ending — "
+                    "possible hang or missing terminal condition"
+                )
+
+            assert terminated or truncated, f"Game {game} did not end (no terminated/truncated)"
+            _log.debug("Game %d completed in %d steps", game, steps)
+    finally:
+        env.close()
