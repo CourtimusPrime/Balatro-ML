@@ -1,14 +1,15 @@
 """
 Action space definition for BalatroEnv.
 
-N=31 flat Discrete space. ACTION_INDEX maps action name → int index.
+N=37 flat Discrete space. ACTION_INDEX maps action name → int index.
 decode_action(i) returns the JSON dict sent to Lua. build_mask(phase, ...) returns
-a np.ndarray bool (31,) indicating which actions are legal in the current state.
+a np.ndarray bool (37,) indicating which actions are legal in the current state.
 
 Action index layout:
   Playing phase   (0-9):  toggle_card_0..7, commit_play, commit_discard
   Shop phase     (10-28):  buy_0..7, sell_joker_0..4, use_consumable_0..3, reroll, leave_shop
   Blind-select   (29-30):  select_blind, skip_blind
+  Booster-pack   (31-36):  select_pack_card_0..4, skip_pack
 """
 
 from __future__ import annotations
@@ -38,7 +39,11 @@ LEAVE_SHOP          = 28
 SELECT_BLIND        = 29
 SKIP_BLIND          = 30
 
-N_ACTIONS           = 31
+# Booster-pack phase (indices 31-36)
+SELECT_PACK_CARD_BASE = 31   # indices 31-35: select_pack_card_i (i in 0..4)
+SKIP_PACK             = 36
+
+N_ACTIONS           = 37
 
 # ---------------------------------------------------------------------------
 # Name → index mapping (31 entries)
@@ -55,6 +60,8 @@ ACTION_INDEX: dict[str, int] = {
     "leave_shop":    LEAVE_SHOP,
     "select_blind":  SELECT_BLIND,
     "skip_blind":    SKIP_BLIND,
+    **{f"select_pack_card_{i}": SELECT_PACK_CARD_BASE + i for i in range(5)},
+    "skip_pack":     SKIP_PACK,
 }
 
 # Reverse lookup: index → decoded action dict (used by decode_action)
@@ -69,6 +76,8 @@ _INDEX_TO_ACTION: dict[int, dict[str, Any]] = {
     LEAVE_SHOP:   {"action": "leave_shop"},
     SELECT_BLIND: {"action": "select_blind"},
     SKIP_BLIND:   {"action": "skip_blind"},
+    **{SELECT_PACK_CARD_BASE + i: {"action": "select_pack_card", "index": i} for i in range(5)},
+    SKIP_PACK:    {"action": "skip_pack"},
 }
 
 
@@ -80,7 +89,7 @@ _INDEX_TO_ACTION: dict[int, dict[str, Any]] = {
 def decode_action(index: int) -> dict[str, Any]:
     """Return the JSON dict to send to Lua for action *index*.
 
-    Raises ValueError if *index* is not in 0..30 (T-02-02 mitigation).
+    Raises ValueError if *index* is not in 0..36 (T-02-02 mitigation).
     """
     if index not in _INDEX_TO_ACTION:
         raise ValueError(
