@@ -184,7 +184,8 @@ def build_mask(
     elif phase == "shop":
         # buy_i: legal if slot i has an item and we can afford it
         for i, item in enumerate(shop_items[:8]):
-            if item is not None and money >= item.cost:
+            item_cost = item.get("cost") if isinstance(item, dict) else getattr(item, "cost", None)
+            if item is not None and item_cost is not None and money >= item_cost:
                 mask[BUY_BASE + i] = True
 
         # sell_joker_i: legal if slot i has a non-eternal joker
