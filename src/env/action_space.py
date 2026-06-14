@@ -86,6 +86,48 @@ _INDEX_TO_ACTION: dict[int, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
+def _pick_is_placeable(
+    card: dict,
+    consumables: list,
+    jokers: list,
+    consumable_slots: int,
+    joker_slots: int,
+) -> bool:
+    """Return True if *card* can be placed given current slot availability.
+
+    Card type integers (from ShopItemObs.type, post-normalisation):
+      0=joker, 1=tarot, 2=planet, 3=spectral, 4=playing_card/base
+
+    Planet (2) and Base/playing-card (4) are always placeable.
+    Tarot (1) / Spectral (3) need a free consumable slot.
+    Joker (0, Buffoon) needs a free joker slot.
+    Any other type defaults to False.
+    """
+    # Support both raw dict cards (from tests) and Pydantic model objects
+    card_type = card.get("type") if isinstance(card, dict) else getattr(card, "type", None)
+
+    # Normalise string type names (wire format before normalisation)
+    _TYPE_MAP = {
+        "Joker": 0, "Tarot": 1, "Planet": 2, "Spectral": 3,
+        "Base": 4, "Celestial": 2,
+    }
+    if isinstance(card_type, str):
+        card_type = _TYPE_MAP.get(card_type, -1)
+
+    if card_type in (2, 4):
+        # Planet and playing card: always placeable
+        return True
+    if card_type in (1, 3):
+        # Tarot / Spectral: need a free consumable slot
+        occupied = sum(1 for c in consumables if c is not None)
+        return occupied < consumable_slots
+    if card_type == 0:
+        # Joker / Buffoon: need a free joker slot
+        occupied = sum(1 for j in jokers if j is not None)
+        return occupied < joker_slots
+    return False
+
+
 def decode_action(index: int) -> dict[str, Any]:
     """Return the JSON dict to send to Lua for action *index*.
 
@@ -103,19 +145,25 @@ def build_mask(
     hand_size: int,
     n_selected: int,
     discards_remaining: int,
-    shop_items: list,       # list[ShopItemObs | None], max len 8
-    jokers: list,           # list[JokerObs | None], max len 5; joker.eternal: bool
-    consumables: list,      # list[ConsumableObs | None], max len 4
+    shop_items: list,           # list[ShopItemObs | None], max len 8
+    jokers: list,               # list[JokerObs | None], max len 5; joker.eternal: bool
+    consumables: list,          # list[ConsumableObs | None], max len 4
     money: int,
     reroll_cost: int,
+    pack_cards: list = (),      # list[ShopItemObs | None | dict], max len 5
+    pack_picks_remaining: int = 0,
+    consumable_slots: int = 0,
+    joker_slots: int = 0,
 ) -> np.ndarray:
-    """Return boolean mask shape (31,) — True = legal action in current state.
+    """Return boolean mask shape (37,) — True = legal action in current state.
 
     Phase routing:
       "playing"      — enables toggle_card_i for occupied slots, commit_play/discard
       "shop"         — enables buy/sell/use per slot contents and affordability,
                        reroll if affordable, leave_shop always
       "blind_select" — enables only select_blind and skip_blind
+      "booster_pack" — enables select_pack_card_i for occupied+placeable slots
+                       while pack_picks_remaining > 0; skip_pack always legal
       other/unknown  — all-False mask (safe default)
     """
     mask = np.zeros(N_ACTIONS, dtype=bool)
@@ -159,5 +207,17 @@ def build_mask(
     elif phase == "blind_select":
         mask[SELECT_BLIND] = True
         mask[SKIP_BLIND]   = True
+
+    elif phase == "booster_pack":
+        # select_pack_card_i: legal only for occupied+placeable slots while picks remain
+        if pack_picks_remaining > 0:
+            for i, card in enumerate(pack_cards[:5]):
+                if card is not None and _pick_is_placeable(
+                    card, consumables, jokers, consumable_slots, joker_slots
+                ):
+                    mask[SELECT_PACK_CARD_BASE + i] = True
+        # skip_pack: ALWAYS legal — guaranteed terminal (SC-6); must NOT be nested under
+        # the picks-remaining guard or the agent can jam with an all-False mask.
+        mask[SKIP_PACK] = True
 
     return mask

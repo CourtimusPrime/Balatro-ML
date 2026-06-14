@@ -63,15 +63,15 @@ def mock_bridge(monkeypatch):
 
 
 def test_n_actions():
-    """N_ACTIONS == 31."""
-    assert N_ACTIONS == 31
+    """N_ACTIONS == 37."""
+    assert N_ACTIONS == 37
 
 
 def test_action_index_unique():
-    """All ACTION_INDEX values are unique; len(ACTION_INDEX) == 31."""
+    """All ACTION_INDEX values are unique; len(ACTION_INDEX) == 37."""
     values = list(ACTION_INDEX.values())
-    assert len(values) == 31
-    assert len(set(values)) == 31
+    assert len(values) == 37
+    assert len(set(values)) == 37
 
 
 def test_decode_action_toggle_card():
@@ -95,9 +95,9 @@ def test_decode_action_shop_actions():
 
 
 def test_decode_action_invalid():
-    """decode_action(31) raises ValueError (out-of-range)."""
+    """decode_action(37) raises ValueError (out-of-range; 31-36 are now valid)."""
     with pytest.raises(ValueError):
-        decode_action(31)
+        decode_action(37)
 
 
 def test_build_mask_shape():
