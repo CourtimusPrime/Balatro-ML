@@ -32,11 +32,11 @@ BML = BML or {
   connected          = false,
   host               = "127.0.0.1",
   port               = tonumber(os.getenv("BALATRO_ML_PORT")) or 12345,
+  mod_id             = (SMODS.current_mod and SMODS.current_mod.id) or "BalatroML",  -- for runtime SMODS.load_file on reload
+
   pending_blind      = nil,    -- deferred "select_blind"/"skip_blind" awaiting a ready UI
   awaiting_response  = false,  -- true after an action is dispatched, until its snapshot is emitted
   last_acted_on_deck = nil,    -- blind_on_deck we last acted on; suppresses re-acting during teardown
-  debug_states       = true,   -- TEMP (W4): emit throttled DBG_STATE while awaiting a response
-  dbg_tick           = 0,
 }
 
 -- ---------------------------------------------------------------------------

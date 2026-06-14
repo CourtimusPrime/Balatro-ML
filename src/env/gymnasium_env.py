@@ -172,8 +172,12 @@ class BalatroEnv(gym.Env):
             {"action": "start_run", "deck": self._deck, "stake": self._stake}
         )
 
-        # Block until blind_start or draw arrives (up to 30 s)
-        raw = self._bridge.get_state(timeout=30.0)
+        # Block until the first actionable event arrives (up to 30 s), draining
+        # any non-actionable events (e.g. diagnostics) the same way step() does.
+        while True:
+            raw = self._bridge.get_state(timeout=30.0)
+            if raw.get("event") in ACTIONABLE_EVENTS:
+                break
         obs = parse_observation(raw)
         self._last_obs = obs
         self._current_phase = obs.phase

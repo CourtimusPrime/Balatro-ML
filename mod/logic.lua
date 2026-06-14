@@ -222,22 +222,6 @@ function BML_Bridge._advance_and_respond()
   if not BML.awaiting_response then return end
   if BML.pending_blind then return end       -- blind action not fired yet; wait
 
-  -- TEMP (W4 Bug 1) diagnostic: while awaiting a response, periodically report the
-  -- state so a live run reveals where a step hangs (e.g. after commit_play). The
-  -- event name is non-actionable, so Python's step() drains/ignores it but it shows
-  -- in pytest -s output. Disable by setting BML.debug_states = false.
-  if BML.debug_states then
-    BML.dbg_tick = (BML.dbg_tick or 0) + 1
-    if BML.dbg_tick % 20 == 1 then
-      local q = (G.E_MANAGER and G.E_MANAGER.queues and G.E_MANAGER.queues.base)
-                  and #G.E_MANAGER.queues.base or -1
-      local msg = string.format(
-        "DBG_STATE state=%s complete=%s equeue=%s",
-        tostring(G.STATE), tostring(G.STATE_COMPLETE), tostring(q))
-      pcall(function() BML_Bridge.emit_raw(json.encode({ event = msg }) .. "\n") end)
-    end
-  end
-
   -- Clear the "already acted" guard once we've left the blind-select screen.
   if G.STATE ~= G.STATES.BLIND_SELECT then BML.last_acted_on_deck = nil end
 
@@ -289,8 +273,11 @@ function BML_Bridge.dispatch(action)
   -- game. Redefines BML_State.* and BML_Bridge.* in place; connection and the
   -- persistent BML table survive. Not a game action, so no _awaiting_response.
   if name == "reload" then
-    local ok_s, err_s = pcall(function() assert(SMODS.load_file("state.lua"))() end)
-    local ok_l, err_l = pcall(function() assert(SMODS.load_file("logic.lua"))() end)
+    -- SMODS.load_file needs the mod id at runtime (SMODS.current_mod is only set
+    -- during initial load; without an id it errors). Use the captured/known id.
+    local mid = BML.mod_id or "BalatroML"
+    local ok_s, err_s = pcall(function() assert(SMODS.load_file("state.lua", mid))() end)
+    local ok_l, err_l = pcall(function() assert(SMODS.load_file("logic.lua", mid))() end)
     if ok_s and ok_l then
       BML_Bridge.emit_raw('{"event":"reload_ok"}\n')
     else
@@ -329,9 +316,19 @@ function BML_Bridge.dispatch(action)
       G:start_run({ stake = action.stake or 1, seed = "" })
 
     elseif name == "toggle_card" then
+      -- Use the real selection API so G.hand.highlighted (the list
+      -- play_cards_from_highlighted reads) stays in sync. Setting card.highlighted
+      -- directly leaves that list empty -> commit_play plays nothing -> Balatro's
+      -- evaluate_play crashes indexing G.GAME.hands[nil] (state_events.lua:593).
       local i = action.index + 1
       local card = G.hand and G.hand.cards and G.hand.cards[i]
-      if card then card.highlighted = not card.highlighted end
+      if card then
+        if card.highlighted then
+          G.hand:remove_from_highlighted(card)
+        else
+          G.hand:add_to_highlighted(card)
+        end
+      end
 
     elseif name == "commit_play" then
       G.FUNCS.play_cards_from_highlighted({})

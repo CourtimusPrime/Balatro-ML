@@ -677,6 +677,7 @@ _EXPECTED_OBS_DTYPES = {
     "jokers": np.float32,
     "consumables": np.int32,
     "shop": np.int32,
+    "pack": np.int32,
     "game_state": np.float32,
 }
 
