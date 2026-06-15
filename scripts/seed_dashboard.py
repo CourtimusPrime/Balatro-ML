@@ -49,6 +49,7 @@ from loguru import logger
 
 from src.dashboard import db
 from src.dashboard.recorder import Recorder
+from src.env.action_space import COMMIT_PLAY
 from src.env.gymnasium_env import BalatroEnv
 
 app = typer.Typer(add_completion=False)
@@ -90,13 +91,15 @@ def _play_one_game(env: BalatroEnv, rec: Recorder, deck: str, stake: int) -> int
             logger.warning("No legal actions available — ending game early")
             break
         action = int(np.random.choice(legal))
+        played = action == COMMIT_PLAY  # the protocol has no hand_played event; gate on the action
 
         _obs, _reward, terminated, truncated, info = env.step(action)
 
         # Pitfall 6: RAW typed obs. Truncation safety: pass info through
         # UNMODIFIED — never index info["event"] here (it is {} on truncation).
-        rec.on_step(run_id, env._last_obs, info)
-        if info.get("event") == "hand_played":
+        # `played` tells the recorder a hand was committed (see Recorder.on_step).
+        rec.on_step(run_id, env._last_obs, info, played=played)
+        if played:
             n_hands += 1
 
         if terminated or truncated:

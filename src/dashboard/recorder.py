@@ -151,11 +151,17 @@ class Recorder:
         })
         return run_id
 
-    def on_step(self, run_id: int, obs, info: dict) -> None:
+    def on_step(self, run_id: int, obs, info: dict, played: bool = False) -> None:
         """Process one env step: track max-ante, gate hand/ante rows, derive score.
 
         ``info`` may be ``{}`` on a socket-timeout truncation — the event is read
         via ``info.get("event")`` and a missing event produces no row.
+
+        ``played`` signals the caller's action WAS a hand play (``commit_play``).
+        The bridge protocol emits no distinct "hand_played" event — a play resolves
+        to a ``draw``/``shop_open``/``run_*`` snapshot — so the caller, which knows
+        the action it sent, tells the recorder when to record a hand_events row
+        (from ``obs.last_hand`` + the per-blind chips delta).
         """
         state = self._runs.get(run_id)
         if state is None:
@@ -182,7 +188,9 @@ class Recorder:
             })
             state.baseline = gs.chips_scored
 
-        elif event == "hand_played":
+        elif played:
+            # A hand was played (caller's action == commit_play). The protocol has
+            # no "hand_played" event, so we gate on the action, not info["event"].
             # Per-hand score = chips_scored delta vs the per-ante baseline.
             score = gs.chips_scored - state.baseline
             if score < 0:
