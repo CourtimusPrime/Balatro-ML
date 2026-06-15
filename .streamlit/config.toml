@@ -2,5 +2,5 @@
 # Locked by 03-UI-SPEC.md § Color: dark base + Balatro Gold accent so native
 # widgets (tab underline, metric deltas, focus rings) match the chart accent.
 [theme]
-base = "dark"
+base = "light"
 primaryColor = "#F0A500"
