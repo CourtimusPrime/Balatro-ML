@@ -441,3 +441,64 @@ def test_flush_batch_unknown_kind_rolls_back(empty_db):
     n_ante = conn.execute("SELECT COUNT(*) FROM ante_events").fetchone()[0]
     conn.close()
     assert n_ante == 0
+
+
+# ---------------------------------------------------------------------------
+# Post-seed live assertion (DASH-04) — run AFTER scripts/seed_dashboard.py.
+#
+# Select with `pytest tests/test_db.py -k seeded`. This asserts against the REAL
+# on-disk db.DB_PATH that the live seed run wrote, so it can only succeed once a
+# live 50-game seed has populated it. The offline suite must stay green, so the
+# test SELF-SKIPS when db.DB_PATH is absent or empty — it never requires a live
+# game just to collect/run the offline tests.
+# ---------------------------------------------------------------------------
+
+
+def _live_db_has_runs() -> bool:
+    """True iff db.DB_PATH exists and holds >=1 run; False otherwise (no raise)."""
+    import os
+
+    if not os.path.exists(db.DB_PATH):
+        return False
+    try:
+        conn = db.connect(db.DB_PATH, read_only=True)
+    except Exception:
+        return False
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    except Exception:
+        return False
+    finally:
+        conn.close()
+    return n > 0
+
+
+def test_seeded_db_every_query_nonempty():
+    """After a live seed, every dashboard query method returns non-empty data.
+
+    Self-skips on an empty/absent db.DB_PATH so the offline suite stays green.
+    """
+    if not _live_db_has_runs():
+        pytest.skip("db.DB_PATH empty/absent — run scripts/seed_dashboard.py first")
+
+    conn = db.connect(db.DB_PATH, read_only=True)
+    try:
+        assert not db.get_all_runs(conn).empty, "get_all_runs returned no rows"
+        assert not db.get_deck_stake_stats(conn).empty, "get_deck_stake_stats empty"
+        assert not db.get_hand_type_counts(conn).empty, "get_hand_type_counts empty"
+
+        best, hands = db.get_best_run(conn)
+        assert best is not None, "get_best_run found no finalized run"
+        assert not hands.empty, "get_best_run returned no hand_events"
+
+        thr = db.get_throughput(conn)
+        assert thr["games"] > 0, "get_throughput reported zero games"
+
+        # At least one hand carries a non-NULL hand_type -> the mod's live
+        # last_hand payload landed (proves Panels 5 & 6 are populated).
+        n_typed = conn.execute(
+            "SELECT COUNT(*) FROM hand_events WHERE hand_type IS NOT NULL"
+        ).fetchone()[0]
+        assert n_typed > 0, "no hand_events with a non-NULL hand_type"
+    finally:
+        conn.close()
