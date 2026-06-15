@@ -21,3 +21,5 @@ balatro_ml.egg-info/
 
 # GSD planning (local-only)
 .planning/
+CLAUDE.local.md
+HANDOFF.md
