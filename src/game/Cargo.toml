@@ -1,0 +1,19 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2021"
+description = "Balatro simulator, tactical solver, and RL environment (fast layer)."
+
+# Modules live flat under game/ (rules/, sim/, solver/, env/) per ARCHITECTURE.md §1,
+# so the library root is declared explicitly rather than the default src/lib.rs.
+[lib]
+name = "game"
+path = "lib.rs"
+
+[features]
+# Enables the pyo3 bindings consumed by src/agent (see ARCHITECTURE.md §6).
+python = ["pyo3"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
